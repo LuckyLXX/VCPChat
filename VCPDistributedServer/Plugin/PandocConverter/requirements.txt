@@ -1,0 +1,26 @@
+# PandocConverter 插件 Python 依赖
+# 注意：此插件需要系统安装 Pandoc
+
+# 核心依赖（Python 3.7+ 内置模块）
+# json - JSON数据处理
+# os - 操作系统接口
+# sys - 系统相关参数和函数
+# subprocess - 子进程管理
+# tempfile - 临时文件和目录
+# shutil - 高级文件操作
+# logging - 日志记录
+# pathlib - 面向对象的路径操作
+# datetime - 日期和时间处理
+# typing - 类型提示支持
+# mimetypes - MIME类型猜测
+# urllib.parse - URL解析
+# urllib.request - URL请求
+
+# 可选依赖（用于增强功能）
+# requests>=2.25.1  # HTTP请求库（如果需要更高级的网络功能）
+# beautifulsoup4>=4.9.3  # HTML解析（如果需要处理复杂HTML）
+# markdown>=3.3.4  # Markdown处理（如果需要预处理）
+# jinja2>=2.11.3  # 模板引擎（如果需要自定义模板）
+# pygments>=2.8.0  # 语法高亮（通常Pandoc自带）
+# weasyprint>=52.5  # HTML到PDF转换（可选的PDF引擎）
+# pillow>=8.2.0  # 图像处理（如果需要处理图片）

@@ -1,0 +1,267 @@
+/* PandocConverter 自定义样式 */
+
+/* 基本样式 */
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+    line-height: 1.6;
+    color: #333;
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    background-color: #fff;
+}
+
+/* 标题样式 */
+h1, h2, h3, h4, h5, h6 {
+    margin-top: 1.5em;
+    margin-bottom: 0.5em;
+    font-weight: 600;
+    line-height: 1.25;
+}
+
+h1 {
+    font-size: 2.5em;
+    border-bottom: 1px solid #eaecef;
+    padding-bottom: 0.3em;
+}
+
+h2 {
+    font-size: 2em;
+    border-bottom: 1px solid #eaecef;
+    padding-bottom: 0.3em;
+}
+
+h3 {
+    font-size: 1.5em;
+}
+
+h4 {
+    font-size: 1.25em;
+}
+
+h5 {
+    font-size: 1em;
+}
+
+h6 {
+    font-size: 0.875em;
+    color: #6a737d;
+}
+
+/* 段落样式 */
+p {
+    margin-bottom: 1em;
+}
+
+/* 链接样式 */
+a {
+    color: #0366d6;
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+/* 列表样式 */
+ul, ol {
+    padding-left: 2em;
+    margin-bottom: 1em;
+}
+
+li {
+    margin-bottom: 0.25em;
+}
+
+/* 代码样式 */
+code {
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
+    background-color: rgba(27, 31, 35, 0.05);
+    border-radius: 3px;
+    font-size: 85%;
+    padding: 0.2em 0.4em;
+}
+
+pre {
+    background-color: #f6f8fa;
+    border-radius: 6px;
+    padding: 16px;
+    overflow: auto;
+    font-size: 85%;
+    line-height: 1.45;
+    margin-bottom: 1em;
+}
+
+pre code {
+    background-color: transparent;
+    border-radius: 0;
+    padding: 0;
+    font-size: 100%;
+}
+
+/* 表格样式 */
+table {
+    border-collapse: collapse;
+    width: 100%;
+    margin-bottom: 1em;
+}
+
+th, td {
+    border: 1px solid #dfe2e5;
+    padding: 8px 12px;
+    text-align: left;
+}
+
+th {
+    background-color: #f6f8fa;
+    font-weight: 600;
+}
+
+tr:nth-child(even) {
+    background-color: #f6f8fa;
+}
+
+/* 引用样式 */
+blockquote {
+    padding: 0 1em;
+    color: #6a737d;
+    border-left: 0.25em solid #dfe2e5;
+    margin-bottom: 1em;
+}
+
+blockquote p {
+    margin-bottom: 0;
+}
+
+/* 分隔线样式 */
+hr {
+    height: 0.25em;
+    padding: 0;
+    margin: 24px 0;
+    background-color: #e1e4e8;
+    border: 0;
+}
+
+/* 图片样式 */
+img {
+    max-width: 100%;
+    height: auto;
+    display: block;
+    margin: 0 auto;
+}
+
+/* 数学公式样式 */
+.math.display {
+    display: block;
+    text-align: center;
+    margin: 1em 0;
+    font-size: 1.1em;
+}
+
+.math.inline {
+    display: inline;
+    font-size: 1.05em;
+}
+
+/* 代码高亮样式 */
+.sourceCode {
+    background-color: #f6f8fa;
+    border-radius: 6px;
+    padding: 16px;
+    overflow: auto;
+    font-size: 85%;
+    line-height: 1.45;
+    margin-bottom: 1em;
+}
+
+/* 语法高亮 - GitHub风格 */
+.token.comment {
+    color: #6a737d;
+}
+
+.token.keyword {
+    color: #d73a49;
+}
+
+.token.string {
+    color: #032f62;
+}
+
+.token.number {
+    color: #005cc5;
+}
+
+.token.function {
+    color: #6f42c1;
+}
+
+.token.operator {
+    color: #d73a49;
+}
+
+.token.class-name {
+    color: #6f42c1;
+}
+
+.token.tag {
+    color: #22863a;
+}
+
+.token.attribute {
+    color: #6f42c1;
+}
+
+.token.property {
+    color: #005cc5;
+}
+
+/* 响应式设计 */
+@media (max-width: 768px) {
+    body {
+        padding: 10px;
+    }
+    
+    h1 {
+        font-size: 2em;
+    }
+    
+    h2 {
+        font-size: 1.5em;
+    }
+    
+    pre, .sourceCode {
+        padding: 12px;
+    }
+}
+
+/* 打印样式 */
+@media print {
+    body {
+        font-size: 12pt;
+        line-height: 1.4;
+        color: #000;
+        background-color: #fff;
+    }
+    
+    a {
+        color: #000;
+        text-decoration: underline;
+    }
+    
+    h1, h2, h3, h4, h5, h6 {
+        page-break-after: avoid;
+    }
+    
+    pre, blockquote {
+        border: 1px solid #ccc;
+        page-break-inside: avoid;
+    }
+    
+    img {
+        max-width: 100% !important;
+    }
+    
+    ul, ol {
+        page-break-inside: avoid;
+    }
+}

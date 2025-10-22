@@ -1,0 +1,93 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "PandocConverter",
+  "version": "1.0.0",
+  "displayName": "Pandoc 文档格式转换器",
+  "description": "强大的文档格式转换插件，支持Markdown与多种格式（HTML、PDF、Word、LaTeX、EPUB等）的双向转换，保留代码高亮、数学公式、表格和图片等元素。",
+  "author": "VCP Team",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "python",
+    "command": "python3 pandoc_converter.py"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 120000
+  },
+  "configSchema": {
+    "PANDOC_PATH": {
+      "type": "string",
+      "description": "Pandoc可执行文件路径，如果不在PATH中需要指定完整路径",
+      "default": "pandoc"
+    },
+    "OUTPUT_DIR": {
+      "type": "string", 
+      "description": "输出文件目录",
+      "default": "./outputs"
+    },
+    "TEMP_DIR": {
+      "type": "string",
+      "description": "临时文件目录",
+      "default": "./temp"
+    },
+    "ENABLE_MATHJAX": {
+      "type": "boolean",
+      "description": "是否启用MathJax数学公式支持",
+      "default": true
+    },
+    "ENABLE_SYNTAX_HIGHLIGHTING": {
+      "type": "boolean",
+      "description": "是否启用代码语法高亮",
+      "default": true
+    },
+    "DEFAULT_PDF_ENGINE": {
+      "type": "string",
+      "description": "默认PDF生成引擎",
+      "default": "xelatex"
+    },
+    "CLEANUP_TEMP_FILES": {
+      "type": "boolean",
+      "description": "是否自动清理临时文件",
+      "default": true
+    },
+    "MAX_FILE_SIZE_MB": {
+      "type": "integer",
+      "description": "最大文件大小限制（MB）",
+      "default": 50
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "ConvertFile",
+        "description": "将文档从一种格式转换为另一种格式。支持Markdown、HTML、PDF、Word(docx)、LaTeX、reStructuredText、EPUB等格式的双向转换。\n\n**参数说明:**\n- inputFile (字符串, 必需): 输入文件路径或URL，支持file://协议用于分布式文件访问\n- inputFormat (字符串, 可选): 输入文件格式，如不指定将自动检测\n- outputFile (字符串, 可选): 输出文件路径，如不指定将自动生成\n- outputFormat (字符串, 必需): 输出格式，支持: html, pdf, docx, latex, rst, epub, txt, markdown等\n- options (对象, 可选): 转换选项，包含以下可选参数：\n  - title (字符串): 文档标题\n  - author (字符串): 文档作者\n  - cssFile (字符串): CSS样式文件路径\n  - template (字符串): 模板文件路径\n  - toc (布尔): 是否生成目录，默认false\n  - tocDepth (整数): 目录深度，默认3\n  - highlightStyle (字符串): 代码高亮样式，默认pygments\n  - mathMethod (字符串): 数学公式渲染方法，支持mathjax、katex、webtex\n  - pdfEngine (字符串): PDF生成引擎，支持pdflatex、xelatex、lualatex\n  - fontSize (字符串): 字体大小，如12pt\n  - margin (字符串): 页边距，如1in\n  - lineSpacing (字符串): 行间距，如1.5\n  - columns (整数): 分栏数量，默认1\n  - papersize (字符串): 纸张大小，如a4、letter\n  - landscape (布尔): 是否横向，默认false\n  - enableRawHTML (布尔): 是否允许原始HTML，默认true\n  - preserveTabs (布尔): 是否保留制表符，默认false\n  - tabStop (整数): 制表符宽度，默认4\n\n**调用格式:**\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PandocConverter「末」,\ncommand:「始」ConvertFile「末」,\ninputFile:「始」/path/to/document.md「末」,\noutputFormat:「始」pdf「末」,\noptions:「始」{\"title\":\"我的文档\",\"author\":\"作者名\",\"toc\":true,\"highlightStyle\":\"github\"}「末」\n<<<[END_TOOL_REQUEST]>>>\n\n**分布式文件访问:**\n在分布式环境中，请使用file://协议指定文件路径，例如：file:///C:/Users/用户名/docs/report.md",
+        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PandocConverter「末」,\ncommand:「始」ConvertFile「末」,\ninputFile:「始」file:///C:/Users/用户名/docs/report.md「末」,\noutputFormat:「始」pdf「末」,\noptions:「始」{\"title\":\"技术报告\",\"author\":\"张三\",\"toc\":true,\"tocDepth\":2,\"highlightStyle\":\"github\",\"pdfEngine\":\"xelatex\",\"fontSize\":\"12pt\",\"margin\":\"1in\"}「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+      },
+      {
+        "commandIdentifier": "BatchConvert",
+        "description": "批量转换多个文件，支持将多个相同格式的文件转换为另一种格式。\n\n**参数说明:**\n- inputFiles (数组, 必需): 输入文件路径列表，支持file://协议\n- inputFormat (字符串, 可选): 输入文件格式，如不指定将自动检测\n- outputDir (字符串, 可选): 输出目录，如不指定将使用默认输出目录\n- outputFormat (字符串, 必需): 输出格式\n- options (对象, 可选): 转换选项（同ConvertFile命令）\n- preserveStructure (布尔, 可选): 是否保持目录结构，默认false\n\n**调用格式:**\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PandocConverter「末」,\ncommand:「始」BatchConvert「末」,\ninputFiles:「始」[\"/path/to/doc1.md\", \"/path/to/doc2.md\"]「末」,\noutputFormat:「始」html「末」,\noptions:「始」{\"title\":\"文档集\",\"toc\":true}「末」,\npreserveStructure:「始」true「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PandocConverter「末」,\ncommand:「始」BatchConvert「末」,\ninputFiles:「始」[\"file:///C:/docs/chapter1.md\", \"file:///C:/docs/chapter2.md\", \"file:///C:/docs/chapter3.md\"]「末」,\noutputFormat:「始」docx「末」,\noutputDir:「始」./outputs「末」,\noptions:「始」{\"title\":\"完整文档\",\"toc\":true,\"highlightStyle\":\"pygments\"}「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+      },
+      {
+        "commandIdentifier": "DetectFormat",
+        "description": "检测文档文件的格式。\n\n**参数说明:**\n- inputFile (字符串, 必需): 要检测的文件路径，支持file://协议\n\n**调用格式:**\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PandocConverter「末」,\ncommand:「始」DetectFormat「末」,\ninputFile:「始」/path/to/unknown_file「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PandocConverter「末」,\ncommand:「始」DetectFormat「末」,\ninputFile:「始」file:///C:/Users/用户名/docs/mystery_document「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+      },
+      {
+        "commandIdentifier": "GetSupportedFormats",
+        "description": "获取支持的输入和输出格式列表。\n\n**参数说明:**\n无需参数\n\n**调用格式:**\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PandocConverter「末」,\ncommand:「始」GetSupportedFormats「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PandocConverter「末」,\ncommand:「始」GetSupportedFormats「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+      },
+      {
+        "commandIdentifier": "ConvertFromContent",
+        "description": "直接从文本内容进行格式转换，无需提供文件路径。这是分布式环境中最可靠的方式。\n\n**参数说明:**\n- content (字符串, 必需): 要转换的文本内容\n- inputFormat (字符串, 必需): 输入内容的格式\n- outputFormat (字符串, 必需): 输出格式\n- options (对象, 可选): 转换选项（同ConvertFile命令）\n- outputFile (字符串, 可选): 输出文件路径，如不指定将自动生成\n\n**调用格式:**\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PandocConverter「末」,\ncommand:「始」ConvertFromContent「末」,\ncontent:「始」# 标题\\n\\n这是一个**Markdown**文档。\"末」,\ninputFormat:「始」markdown「末」,\noutputFormat:「始」html「末」,\noptions:「始」{\"title\":\"转换测试\"}「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PandocConverter「末」,\ncommand:「始」ConvertFromContent「末」,\ncontent:「始」# 数学公式测试\\n\\n当 $a \\ne 0$ 时，方程 $ax^2 + bx + c = 0$ 的解为：\\n\\n$$x = {-b \\pm \\sqrt{b^2-4ac} \\over 2a}$$\"末」,\ninputFormat:「始」markdown「末」,\noutputFormat:「始」html「末」,\noptions:「始」{\"mathMethod\":\"mathjax\",\"title\":\"数学公式\"}「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+      }
+    ]
+  },
+  "dependencies": {
+    "python": ">=3.7",
+    "system": ["pandoc"],
+    "libraries": ["requests", "pathlib", "tempfile", "subprocess", "json", "os", "sys", "logging", "shutil", "mimetypes", "urllib.parse", "urllib.request"]
+  }
+}
