@@ -29,10 +29,13 @@ function ensureNewlineAfterCodeBlock(text) {
  */
 function ensureSpaceAfterTilde(text) {
     if (typeof text !== 'string') return text;
-    // Replace ~ not followed by a space with ~ followed by a space,
-    // but only if the ~ is not preceded by a non-whitespace character (i.e., it's at the start of a word).
-    // This prevents modification of ~ inside URLs.
-    return text.replace(/(?<!\S)~(?![\s~])/g, '~ ');
+    // Replace a tilde `~` with `~ ` to prevent it from being interpreted as a strikethrough marker.
+    // This should not affect tildes in URLs (e.g., `.../~user/`) or code (e.g., `var_~a`).
+    // The regex matches a tilde if it's:
+    // 1. At the start of the string (`^`).
+    // 2. Preceded by a character that is NOT a word character (`\w`), path separator (`/`, `\`), or equals sign (`=`).
+    // It also ensures it's not already followed by a space or another tilde `(?![\s~])`.
+    return text.replace(/(^|[^\w/\\=])~(?![\s~])/g, '$1~ ');
 }
 
 /**
@@ -98,11 +101,17 @@ function prettifySinglePreElement(preElement, type, relevantContent) {
         return;
     }
 
-    let targetContentElement = preElement.querySelector('code') || preElement;
-
-    const copyButton = targetContentElement.querySelector('.code-copy, .fa-copy');
-    if (copyButton) {
-        copyButton.remove(); // Remove existing copy button
+    // Remove the <code> element to prevent Turndown's default code block rule from matching
+    // This ensures our custom Turndown rule can handle these special blocks
+    const codeElement = preElement.querySelector('code');
+    if (codeElement) {
+        // Move any copy buttons or other elements before removing
+        const copyButton = codeElement.querySelector('.code-copy, .fa-copy');
+        if (copyButton) {
+            copyButton.remove();
+        }
+        // Remove the code wrapper, we'll set content directly on pre
+        preElement.innerHTML = '';
     }
 
     if (type === 'vcptool') {
@@ -116,7 +125,7 @@ function prettifySinglePreElement(preElement, type, relevantContent) {
             newInnerHtml += `<span class="vcp-tool-name-highlight">UnknownTool</span>`;
         }
 
-        targetContentElement.innerHTML = newInnerHtml;
+        preElement.innerHTML = newInnerHtml;
         preElement.dataset.vcpPrettified = "true";
 
     } else if (type === 'dailynote') {
@@ -137,7 +146,7 @@ function prettifySinglePreElement(preElement, type, relevantContent) {
             finalHtml = actualNoteContent;
         }
 
-        targetContentElement.innerHTML = finalHtml.replace(/\n/g, '<br>');
+        preElement.innerHTML = finalHtml.replace(/\n/g, '<br>');
         preElement.dataset.maidDiaryPrettified = "true";
     }
 }
@@ -386,6 +395,9 @@ function processAllPreBlocksInContentDiv(contentDiv) {
 
         const codeElement = preElement.querySelector('code');
         const blockText = codeElement ? (codeElement.textContent || "") : (preElement.textContent || "");
+        // 在美化前，将原始文本内容存储到 data-* 属性中
+        // 这是为了在后续的上下文净化过程中，能够恢复原始内容，避免特殊字符被转义
+        preElement.setAttribute('data-raw-content', blockText);
 
         // Check for VCP Tool Request
         if (blockText.includes('<<<[TOOL_REQUEST]>>>') && blockText.includes('<<<[END_TOOL_REQUEST]>>>')) {
