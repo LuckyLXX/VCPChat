@@ -143,8 +143,31 @@ window.chatManager = (() => {
         }
     }
 
-    // --- Functions moved from renderer.js ---
+    /**
+     * Saves the last opened item and topic IDs to the settings file.
+     * This is a private helper function.
+     */
+    function _saveLastOpenState() {
+        const currentSelectedItem = currentSelectedItemRef.get();
+        const currentTopicId = currentTopicIdRef.get();
+        const globalSettings = globalSettingsRef.get();
 
+        if (currentSelectedItem && currentSelectedItem.id) {
+            const settingsToSave = {
+                ...globalSettings, // Preserve existing settings
+                lastOpenItemId: currentSelectedItem.id,
+                lastOpenItemType: currentSelectedItem.type,
+                lastOpenTopicId: currentTopicId,
+            };
+            // No need to await, let it save in the background
+            electronAPI.saveSettings(settingsToSave).catch(err => {
+                console.error('[ChatManager] Failed to save last open state:', err);
+            });
+        }
+    }
+ 
+    // --- Functions moved from renderer.js ---
+ 
     function displayNoItemSelected() {
         const { currentChatNameH3, chatMessagesDiv, currentItemActionBtn, messageInput, sendMessageBtn, attachFileBtn } = elements;
         const voiceChatBtn = document.getElementById('voiceChatBtn');
@@ -162,6 +185,15 @@ window.chatManager = (() => {
     }
 
     async function selectItem(itemId, itemType, itemName, itemAvatarUrl, itemFullConfig) {
+        // 心流锁激活时，不允许切换Agent
+        if (window.flowlockManager && window.flowlockManager.getState && window.flowlockManager.getState().isActive) {
+            if (uiHelper && uiHelper.showToastNotification) {
+                uiHelper.showToastNotification('心流锁运行中，无法切换Agent。请先停止心流锁。', 'warning');
+            }
+            console.log('[ChatManager] Blocked agent switch due to active Flowlock');
+            return;
+        }
+        
         // Stop any previous watcher when switching items
         if (electronAPI.watcherStop) {
             await electronAPI.watcherStop();
@@ -273,9 +305,19 @@ window.chatManager = (() => {
         attachFileBtn.disabled = false;
         // messageInput.focus();
         if (topicListManager) topicListManager.loadTopicList();
+        _saveLastOpenState(); // Save state after selecting an item and its default topic
     }
-
+ 
     async function selectTopic(topicId) {
+        // 心流锁激活时，不允许切换话题
+        if (window.flowlockManager && window.flowlockManager.getState && window.flowlockManager.getState().isActive) {
+            if (uiHelper && uiHelper.showToastNotification) {
+                uiHelper.showToastNotification('心流锁运行中，无法切换话题。请先停止心流锁。', 'warning');
+            }
+            console.log('[ChatManager] Blocked topic switch due to active Flowlock');
+            return;
+        }
+        
         let currentTopicId = currentTopicIdRef.get();
         if (currentTopicId !== topicId) {
             currentTopicIdRef.set(topicId);
@@ -297,6 +339,7 @@ window.chatManager = (() => {
             });
             await loadChatHistory(currentSelectedItem.id, currentSelectedItem.type, topicId);
             localStorage.setItem(`lastActiveTopic_${currentSelectedItem.id}_${currentSelectedItem.type}`, topicId);
+            _saveLastOpenState(); // Save state when a new topic is selected
         }
     }
 
@@ -1003,6 +1046,14 @@ window.chatManager = (() => {
                     // messageRenderer.renderMessage({ role: 'system', content: `新话题 "${result.topicName}" 已开始。`, timestamp: Date.now() });
                 }
                 localStorage.setItem(`lastActiveTopic_${itemId}_${itemType}`, result.topicId);
+                
+                // 🔧 关键修复：为新建的话题启动文件监听器
+                const agentConfigForWatcher = currentSelectedItem.config || currentSelectedItem;
+                if (electronAPI.watcherStart && agentConfigForWatcher?.agentDataPath) {
+                    const historyFilePath = `${agentConfigForWatcher.agentDataPath}\\topics\\${result.topicId}\\history.json`;
+                    await electronAPI.watcherStart(historyFilePath, itemId, result.topicId);
+                    console.log(`[ChatManager] Started file watcher for new topic: ${result.topicId}`);
+                }
                 
                 if (document.getElementById('tabContentTopics').classList.contains('active')) {
                     if (topicListManager) await topicListManager.loadTopicList();

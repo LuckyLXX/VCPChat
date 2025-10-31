@@ -6,6 +6,16 @@ const streamingTimers = new Map();      // messageId -> intervalId
 const accumulatedStreamText = new Map(); // messageId -> string
 let activeStreamingMessageId = null; // Track the currently active streaming message
 
+// --- DOM Cache ---
+const messageDomCache = new Map(); // messageId -> { messageItem, contentDiv }
+
+// --- Performance Caches & Throttling ---
+const scrollThrottleTimers = new Map(); // messageId -> timerId
+const SCROLL_THROTTLE_MS = 100; // 100ms 节流
+const viewContextCache = new Map(); // messageId -> boolean (是否为当前视图)
+let currentViewSignature = null; // 当前视图的签名
+let globalRenderLoopRunning = false;
+
 // --- 新增：预缓冲系统 ---
 const preBufferedChunks = new Map(); // messageId -> array of chunks waiting for initialization
 const messageInitializationStatus = new Map(); // messageId -> 'pending' | 'ready' | 'finalized'
@@ -16,12 +26,23 @@ const messageContextMap = new Map(); // messageId -> {agentId, groupId, topicId,
 // --- Local Reference Store ---
 let refs = {};
 
+// --- Pre-compiled Regular Expressions for Performance ---
+const SPEAKER_TAG_REGEX = /^\[(?:(?!\]:\s).)*的发言\]:\s*/gm;
+const NEWLINE_AFTER_CODE_REGEX = /^(\s*```)(?![\r\n])/gm;
+const SPACE_AFTER_TILDE_REGEX = /(^|[^\w/\\=])~(?![\s~])/g;
+const CODE_MARKER_INDENT_REGEX = /^(\s*)(```.*)/gm;
+const IMG_CODE_SEPARATOR_REGEX = /(<img[^>]+>)\s*(```)/g;
+
 /**
  * Initializes the Stream Manager with necessary dependencies from the main renderer.
  * @param {object} dependencies - An object containing all required functions and references.
  */
 export function initStreamManager(dependencies) {
     refs = dependencies;
+    // Assume morphdom is passed in dependencies, warn if not present.
+    if (!refs.morphdom) {
+        console.warn('[StreamManager] `morphdom` not provided. Streaming rendering will fall back to inefficient innerHTML updates.');
+    }
 }
 
 function shouldEnableSmoothStreaming() {
@@ -35,9 +56,29 @@ function messageIsFinalized(messageId) {
     return initStatus === 'finalized';
 }
 
-// Helper function to determine if a message is for the current view
+/**
+ * 🟢 生成当前视图的唯一签名
+ */
+function getCurrentViewSignature() {
+    const currentSelectedItem = refs.currentSelectedItemRef.get();
+    const currentTopicId = refs.currentTopicIdRef.get();
+    return `${currentSelectedItem?.id || 'none'}-${currentTopicId || 'none'}`;
+}
+
+/**
+ * 🟢 带缓存的视图检查
+ */
 function isMessageForCurrentView(context) {
     if (!context) return false;
+    
+    const newSignature = getCurrentViewSignature();
+    
+    // 如果视图切换了，清空缓存
+    if (currentViewSignature !== newSignature) {
+        currentViewSignature = newSignature;
+        viewContextCache.clear();
+    }
+    
     const currentSelectedItem = refs.currentSelectedItemRef.get();
     const currentTopicId = refs.currentTopicIdRef.get();
     
@@ -71,6 +112,36 @@ async function getHistoryForContext(context) {
     return null;
 }
 
+// 🟢 历史保存防抖
+const historySaveQueue = new Map(); // context signature -> {context, history, timerId}
+const HISTORY_SAVE_DEBOUNCE = 1000; // 1秒防抖
+
+async function debouncedSaveHistory(context, history) {
+    if (!context || context.topicId === 'assistant_chat' || context.topicId?.startsWith('voicechat_')) {
+        return; // 跳过临时聊天
+    }
+    
+    const signature = `${context.groupId || context.agentId}-${context.topicId}`;
+    
+    // 清除之前的定时器
+    const existing = historySaveQueue.get(signature);
+    if (existing?.timerId) {
+        clearTimeout(existing.timerId);
+    }
+    
+    // 设置新的防抖定时器
+    const timerId = setTimeout(async () => {
+        const queuedData = historySaveQueue.get(signature);
+        if (queuedData) {
+            await saveHistoryForContext(queuedData.context, queuedData.history);
+            historySaveQueue.delete(signature);
+        }
+    }, HISTORY_SAVE_DEBOUNCE);
+    
+    // 使用最新的 history 克隆以避免引用问题
+    historySaveQueue.set(signature, { context, history: [...history], timerId });
+}
+
 async function saveHistoryForContext(context, history) {
     const { electronAPI } = refs;
     if (!context || context.isGroupMessage) {
@@ -92,95 +163,281 @@ async function saveHistoryForContext(context, history) {
     }
 }
 
-function processAndRenderSmoothChunk(messageId) {
-    const context = messageContextMap.get(messageId);
-    const isForCurrentView = isMessageForCurrentView(context);
+/**
+ * 批量应用流式渲染所需的轻量级预处理
+ * 减少函数调用开销
+ */
+function applyStreamingPreprocessors(text) {
+    if (!text) return '';
     
-    if (!isForCurrentView) {
-        // For background messages, just process the queue without DOM operations
-        const queue = streamingChunkQueues.get(messageId);
-        if (queue && queue.length > 0) {
-            const globalSettings = refs.globalSettingsRef.get();
-            const minChunkSize = globalSettings.minChunkBufferSize !== undefined && globalSettings.minChunkBufferSize >= 1 ? globalSettings.minChunkBufferSize : 1;
-            
-            let textBatchToProcess = "";
-            while (queue.length > 0 && textBatchToProcess.length < minChunkSize) {
-                textBatchToProcess += queue.shift();
-            }
-            // Just accumulate the text, don't render
-            // The text is already accumulated in appendStreamChunk
-        }
-        return;
+    // 🟢 在流式渲染前也修复一次（双重保险）
+    // 因为流式输出可能绕过 preprocessFullContent
+    if (refs.emoticonUrlFixer) {
+        // Markdown 语法
+        text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, url) => {
+            const fixedUrl = refs.emoticonUrlFixer.fixEmoticonUrl(url);
+            return `![${alt}](${fixedUrl})`;
+        });
+        
+        // HTML 标签
+        text = text.replace(/<img([^>]*?)src=["']([^"']+)["']([^>]*?)>/gi, (match, before, url, after) => {
+            const fixedUrl = refs.emoticonUrlFixer.fixEmoticonUrl(url);
+            return `<img${before}src="${fixedUrl}"${after}>`;
+        });
     }
     
-    // For current view messages, render to DOM
-    const { chatMessagesDiv, markedInstance } = refs;
+    // 🟢 重置 lastIndex（全局正则）
+    SPEAKER_TAG_REGEX.lastIndex = 0;
+    NEWLINE_AFTER_CODE_REGEX.lastIndex = 0;
+    SPACE_AFTER_TILDE_REGEX.lastIndex = 0;
+    CODE_MARKER_INDENT_REGEX.lastIndex = 0;
+    IMG_CODE_SEPARATOR_REGEX.lastIndex = 0;
+    
+    return text
+        .replace(SPEAKER_TAG_REGEX, '')
+        .replace(NEWLINE_AFTER_CODE_REGEX, '$1\n')
+        .replace(SPACE_AFTER_TILDE_REGEX, '$1~ ')
+        .replace(CODE_MARKER_INDENT_REGEX, '$2')
+        .replace(IMG_CODE_SEPARATOR_REGEX, '$1\n\n<!-- VCP-Renderer-Separator -->\n\n$2');
+}
+
+/**
+ * 获取或缓存消息的 DOM 引用
+ */
+function getCachedMessageDom(messageId) {
+    let cached = messageDomCache.get(messageId);
+    
+    if (cached) {
+        // 验证缓存是否仍然有效（元素还在 DOM 中）
+        if (cached.messageItem.isConnected) {
+            return cached;
+        }
+        // 缓存失效，删除
+        messageDomCache.delete(messageId);
+    }
+    
+    // 重新查询并缓存
+    const { chatMessagesDiv } = refs;
     const messageItem = chatMessagesDiv.querySelector(`.message-item[data-message-id="${messageId}"]`);
-    if (!messageItem || !document.body.contains(messageItem)) return;
+    
+    if (!messageItem) return null;
     
     const contentDiv = messageItem.querySelector('.md-content');
-    if (!contentDiv) return;
+    if (!contentDiv) return null;
     
-    const queue = streamingChunkQueues.get(messageId);
-    if (!queue || queue.length === 0) return;
+    cached = { messageItem, contentDiv };
+    messageDomCache.set(messageId, cached);
     
-    let textBatchToRender = "";
-    const globalSettings = refs.globalSettingsRef.get();
-    const minChunkSize = globalSettings.minChunkBufferSize !== undefined && globalSettings.minChunkBufferSize >= 1 ? globalSettings.minChunkBufferSize : 1;
+    return cached;
+}
+
+/**
+ * Sets up onload and onerror handlers for an emoticon image to fix its URL on error
+ * and prevent flickering by controlling its visibility.
+ * @param {HTMLImageElement} img The image element.
+ */
+function setupEmoticonHandlers(img) {
+    img.onload = function() {
+        this.style.visibility = 'visible';
+        this.onload = null;
+        this.onerror = null;
+    };
     
-    while (queue.length > 0 && textBatchToRender.length < minChunkSize) {
-        textBatchToRender += queue.shift();
+    img.onerror = function() {
+        // If a fix was already attempted, make it visible (as a broken image) and stop.
+        if (this.dataset.emoticonFixAttempted === 'true') {
+            this.style.visibility = 'visible';
+            this.onload = null;
+            this.onerror = null;
+            return;
+        }
+        this.dataset.emoticonFixAttempted = 'true';
+        
+        const fixedSrc = refs.emoticonUrlFixer.fixEmoticonUrl(this.src);
+        if (fixedSrc !== this.src) {
+            this.src = fixedSrc; // This will re-trigger either onload or onerror
+        } else {
+            // If the URL can't be fixed, show the broken image and clean up handlers.
+            this.style.visibility = 'visible';
+            this.onload = null;
+            this.onerror = null;
+        }
+    };
+}
+
+/**
+ * Renders a single frame of the streaming message using morphdom for efficient DOM updates.
+ * This version performs minimal processing to keep it fast and avoid destroying JS state.
+ * @param {string} messageId The ID of the message.
+ */
+function renderStreamFrame(messageId) {
+    // 🟢 优先使用缓存
+    let isForCurrentView = viewContextCache.get(messageId);
+    
+    // 如果没有缓存（可能是旧消息），回退到实时检查
+    if (isForCurrentView === undefined) {
+        const context = messageContextMap.get(messageId);
+        isForCurrentView = isMessageForCurrentView(context);
+        viewContextCache.set(messageId, isForCurrentView);
     }
     
-    if (!textBatchToRender) return;
+    if (!isForCurrentView) return;
+
+    // 🟢 使用缓存的 DOM 引用
+    const cachedDom = getCachedMessageDom(messageId);
+    if (!cachedDom) return;
     
+    const { contentDiv } = cachedDom;
+
     const textForRendering = accumulatedStreamText.get(messageId) || "";
-    
+
+    // 移除思考指示器
     const streamingIndicator = contentDiv.querySelector('.streaming-indicator, .thinking-indicator');
     if (streamingIndicator) streamingIndicator.remove();
+
+    // 🟢 使用批量处理函数
+    const processedText = applyStreamingPreprocessors(textForRendering);
+    const rawHtml = refs.markedInstance.parse(processedText);
+
+    if (refs.morphdom) {
+        refs.morphdom(contentDiv, `<div>${rawHtml}</div>`, {
+            childrenOnly: true,
+            
+            onBeforeElUpdated: function(fromEl, toEl) {
+                // 跳过相同节点
+                if (fromEl.isEqualNode(toEl)) {
+                    return false;
+                }
+                
+                // 🟢 保留按钮状态
+                if (fromEl.tagName === 'BUTTON' && fromEl.dataset.vcpInteractive === 'true') {
+                    if (fromEl.disabled) {
+                        toEl.disabled = true;
+                        toEl.style.opacity = fromEl.style.opacity;
+                        toEl.textContent = fromEl.textContent; // 保留"✓"标记
+                    }
+                }
+                
+                // 🟢 保留媒体播放状态
+                if ((fromEl.tagName === 'VIDEO' || fromEl.tagName === 'AUDIO') && !fromEl.paused) {
+                    return false; // 不更新正在播放的媒体
+                }
+                
+                // 🟢 保留输入焦点
+                if (fromEl === document.activeElement) {
+                    requestAnimationFrame(() => toEl.focus());
+                }
+                
+                // 🟢 简化图片逻辑：只保留状态，不再做 URL 对比
+                if (fromEl.tagName === 'IMG') {
+                    // 保留加载状态标记
+                    if (fromEl.dataset.emoticonHandlerAttached) {
+                        toEl.dataset.emoticonHandlerAttached = 'true';
+                    }
+                    if (fromEl.dataset.emoticonFixAttempted) {
+                        toEl.dataset.emoticonFixAttempted = 'true';
+                    }
+                    
+                    // 保留事件处理器
+                    if (fromEl.onerror && !toEl.onerror) {
+                        toEl.onerror = fromEl.onerror;
+                    }
+                    if (fromEl.onload && !toEl.onload) {
+                        toEl.onload = fromEl.onload;
+                    }
+                    
+                    // 保留可见性状态
+                    if (fromEl.style.visibility) {
+                        toEl.style.visibility = fromEl.style.visibility;
+                    }
+                    
+                    // 🟢 如果图片已成功加载，不要更新它
+                    if (fromEl.complete && fromEl.naturalWidth > 0) {
+                        return false;
+                    }
+                }
+                
+                return true;
+            },
+            
+            onBeforeNodeDiscarded: function(node) {
+                // 防止删除标记为永久保留的元素
+                if (node.classList?.contains('keep-alive')) {
+                    return false;
+                }
+                return true;
+            }
+        });
+    } else {
+        contentDiv.innerHTML = rawHtml;
+    }
+
+    // 🟢 新增：为表情包图片添加防闪烁和错误修复逻辑
+    if (refs.emoticonUrlFixer) {
+        const newImages = contentDiv.querySelectorAll('img[src*="表情包"]:not([data-emoticon-handler-attached])');
+        
+        newImages.forEach(img => {
+            img.dataset.emoticonHandlerAttached = 'true';
+            
+            // Hide image initially to prevent broken icon flicker
+            img.style.visibility = 'hidden';
     
-    let processedTextForParse = refs.removeSpeakerTags(textForRendering);
-    processedTextForParse = refs.ensureNewlineAfterCodeBlock(processedTextForParse);
-    processedTextForParse = refs.ensureSpaceAfterTilde(processedTextForParse);
-    processedTextForParse = refs.removeIndentationFromCodeBlockMarkers(processedTextForParse);
-    processedTextForParse = refs.ensureSeparatorBetweenImgAndCode(processedTextForParse);
+            // If image is already loaded (e.g., from cache), show it immediately.
+            // Otherwise, set up handlers to show it on load/error.
+            if (img.complete && img.naturalWidth > 0) {
+                img.style.visibility = 'visible';
+            } else {
+                setupEmoticonHandlers(img);
+            }
+        });
+    }
+}
+
+/**
+ * 🟢 节流版本的滚动函数
+ */
+function throttledScrollToBottom(messageId) {
+    if (scrollThrottleTimers.has(messageId)) {
+        return; // 节流期间，跳过
+    }
     
-    const rawHtml = markedInstance.parse(processedTextForParse);
-    refs.setContentAndProcessImages(contentDiv, rawHtml, messageId);
-    refs.processRenderedContent(contentDiv);
     refs.uiHelper.scrollToBottom();
+    
+    const timerId = setTimeout(() => {
+        scrollThrottleTimers.delete(messageId);
+    }, SCROLL_THROTTLE_MS);
+    
+    scrollThrottleTimers.set(messageId, timerId);
+}
+
+function processAndRenderSmoothChunk(messageId) {
+    const queue = streamingChunkQueues.get(messageId);
+    if (!queue || queue.length === 0) return;
+
+    const globalSettings = refs.globalSettingsRef.get();
+    const minChunkSize = globalSettings.minChunkBufferSize !== undefined && globalSettings.minChunkBufferSize >= 1 ? globalSettings.minChunkBufferSize : 1;
+
+    // Drain a small batch from the queue. The rendering uses the accumulated text,
+    // so we don't need the return value here. This just advances the stream.
+    let processedChars = 0;
+    while (queue.length > 0 && processedChars < minChunkSize) {
+        processedChars += queue.shift().length;
+    }
+
+    // Render the current state of the accumulated text using our lightweight method.
+    renderStreamFrame(messageId);
+    
+    // Scroll if the message is in the current view.
+    const context = messageContextMap.get(messageId);
+    if (isMessageForCurrentView(context)) {
+        throttledScrollToBottom(messageId);
+    }
 }
 
 function renderChunkDirectlyToDOM(messageId, textToAppend) {
-    const context = messageContextMap.get(messageId);
-    const isForCurrentView = isMessageForCurrentView(context);
-    
-    if (!isForCurrentView) {
-        // For background messages, don't render to DOM
-        return;
-    }
-    
-    const { chatMessagesDiv, markedInstance } = refs;
-    const messageItem = chatMessagesDiv.querySelector(`.message-item[data-message-id="${messageId}"]`);
-    if (!messageItem) return;
-    
-    const contentDiv = messageItem.querySelector('.md-content');
-    if (!contentDiv) return;
-    
-    const streamingIndicator = contentDiv.querySelector('.streaming-indicator, .thinking-indicator');
-    if (streamingIndicator) streamingIndicator.remove();
-    
-    const fullCurrentText = accumulatedStreamText.get(messageId) || "";
-    
-    let processedFullCurrentTextForParse = refs.removeSpeakerTags(fullCurrentText);
-    processedFullCurrentTextForParse = refs.ensureNewlineAfterCodeBlock(processedFullCurrentTextForParse);
-    processedFullCurrentTextForParse = refs.ensureSpaceAfterTilde(processedFullCurrentTextForParse);
-    processedFullCurrentTextForParse = refs.removeIndentationFromCodeBlockMarkers(processedFullCurrentTextForParse);
-    processedFullCurrentTextForParse = refs.ensureSeparatorBetweenImgAndCode(processedFullCurrentTextForParse);
-    
-    const rawHtml = markedInstance.parse(processedFullCurrentTextForParse);
-    refs.setContentAndProcessImages(contentDiv, rawHtml, messageId);
-    refs.processRenderedContent(contentDiv);
+    // For non-smooth streaming, we just render the new frame immediately using the lightweight method.
+    // The check for whether it's in the current view is handled inside renderStreamFrame.
+    renderStreamFrame(messageId);
 }
 
 export async function startStreamingMessage(message, passedMessageItem = null) {
@@ -209,6 +466,8 @@ export async function startStreamingMessage(message, passedMessageItem = null) {
     
     const { chatMessagesDiv, electronAPI, currentChatHistoryRef, uiHelper } = refs;
     const isForCurrentView = isMessageForCurrentView(context);
+    // 🟢 缓存视图检查结果
+    viewContextCache.set(messageId, isForCurrentView);
     
     // Get the correct history for this message's context
     let historyForThisMessage;
@@ -285,9 +544,9 @@ export async function startStreamingMessage(message, passedMessageItem = null) {
         currentChatHistoryRef.set([...historyForThisMessage]);
     }
     
-    // Only save history for persistent chats (not temporary assistant/voice chats)
+    // 🟢 使用防抖保存
     if (context.topicId !== 'assistant_chat' && !context.topicId.startsWith('voicechat_')) {
-        await saveHistoryForContext(context, historyForThisMessage);
+        debouncedSaveHistory(context, historyForThisMessage);
     }
     
     // Initialization is complete, message is ready to process chunks.
@@ -310,6 +569,99 @@ export async function startStreamingMessage(message, passedMessageItem = null) {
     return messageItem;
 }
 
+// 🟢 全局渲染循环（替代每个消息一个 interval）
+let lastFrameTime = 0;
+const TARGET_FPS = 30; // 流式渲染30fps足够
+const FRAME_INTERVAL = 1000 / TARGET_FPS;
+
+function startGlobalRenderLoop() {
+    if (globalRenderLoopRunning) return;
+
+    globalRenderLoopRunning = true;
+    lastFrameTime = 0; // 重置时间戳
+
+    function renderLoop(currentTime) {
+        if (streamingTimers.size === 0) {
+            globalRenderLoopRunning = false;
+            return;
+        }
+
+        // 🟢 帧率限制
+        if (!currentTime) { // Fallback for browsers that don't pass currentTime
+            currentTime = performance.now();
+        }
+        if (!lastFrameTime) {
+            lastFrameTime = currentTime;
+        }
+        const elapsed = currentTime - lastFrameTime;
+        if (elapsed < FRAME_INTERVAL) {
+            requestAnimationFrame(renderLoop);
+            return;
+        }
+
+        lastFrameTime = currentTime - (elapsed % FRAME_INTERVAL); // More accurate timing
+
+        // 处理所有活动的流式消息
+        for (const [messageId, _] of streamingTimers) {
+            processAndRenderSmoothChunk(messageId);
+
+            const currentQueue = streamingChunkQueues.get(messageId);
+            if ((!currentQueue || currentQueue.length === 0) && messageIsFinalized(messageId)) {
+                streamingTimers.delete(messageId);
+
+                const storedContext = messageContextMap.get(messageId);
+                const isForCurrentView = viewContextCache.get(messageId) ?? isMessageForCurrentView(storedContext);
+
+                if (isForCurrentView) {
+                    const finalMessageItem = getCachedMessageDom(messageId)?.messageItem;
+                    if (finalMessageItem) finalMessageItem.classList.remove('streaming');
+                }
+
+                streamingChunkQueues.delete(messageId);
+            }
+        }
+
+        requestAnimationFrame(renderLoop);
+    }
+
+    requestAnimationFrame(renderLoop);
+}
+
+/**
+ * 🟢 智能分块策略：按语义单位（词/短语）拆分，而非字符
+ */
+function intelligentChunkSplit(text) {
+    const MIN_SPLIT_SIZE = 20;
+    const MAX_CHUNK_SIZE = 10; // 每个语义块最大字符数
+
+    if (text.length < MIN_SPLIT_SIZE) {
+        return [text];
+    }
+
+    // 使用 matchAll 更快
+    const regex = /[\u4e00-\u9fa5]+|[a-zA-Z0-9]+|[^\u4e00-\u9fa5a-zA-Z0-9\s]+|\s+/g;
+    const semanticUnits = [...text.matchAll(regex)].map(m => m[0]);
+
+    // 将语义单元合并为合理大小的chunk
+    const chunks = [];
+    let currentChunk = '';
+
+    for (const unit of semanticUnits) {
+        if (currentChunk.length + unit.length > MAX_CHUNK_SIZE) {
+            if (currentChunk) { // Avoid pushing empty strings
+                chunks.push(currentChunk);
+            }
+            currentChunk = unit;
+        } else {
+            currentChunk += unit;
+        }
+    }
+
+    if (currentChunk) chunks.push(currentChunk);
+
+    return chunks;
+}
+
 export function appendStreamChunk(messageId, chunkData, context) {
     const initStatus = messageInitializationStatus.get(messageId);
     
@@ -324,14 +676,9 @@ export function appendStreamChunk(messageId, chunkData, context) {
         
         // 防止缓冲区无限增长 - 如果超过1000个chunks，可能有问题
         if (buffer.length > 1000) {
-            console.error(`[StreamManager] Pre-buffer overflow for message ${messageId}! Forcing initialization...`);
-            // 强制设置为ready状态以开始处理
-            messageInitializationStatus.set(messageId, 'ready');
-            // 处理缓冲的chunks
-            for (const bufferedData of buffer) {
-                appendStreamChunk(messageId, bufferedData.chunk, bufferedData.context);
-            }
-            preBufferedChunks.delete(messageId);
+            console.warn(`[StreamManager] Pre-buffer overflow for ${messageId}, discarding old chunks.`);
+            buffer.splice(0, buffer.length - 1000); // 只保留最新1000个
+            return;
         }
         return;
     }
@@ -375,33 +722,20 @@ export function appendStreamChunk(messageId, chunkData, context) {
     if (shouldEnableSmoothStreaming()) {
         const queue = streamingChunkQueues.get(messageId);
         if (queue) {
-            const chars = textToAppend.split('');
-            for (const char of chars) queue.push(char);
+            // 🟢 新代码：智能分块
+            const semanticChunks = intelligentChunkSplit(textToAppend);
+            for (const chunk of semanticChunks) {
+                queue.push(chunk);
+            }
         } else {
             renderChunkDirectlyToDOM(messageId, textToAppend);
             return;
         }
         
+        // 🟢 使用全局循环替代单独的定时器
         if (!streamingTimers.has(messageId)) {
-            const globalSettings = refs.globalSettingsRef.get();
-            const timerId = setInterval(() => {
-                processAndRenderSmoothChunk(messageId);
-                
-                const currentQueue = streamingChunkQueues.get(messageId);
-                if ((!currentQueue || currentQueue.length === 0) && messageIsFinalized(messageId)) {
-                    clearInterval(streamingTimers.get(messageId));
-                    streamingTimers.delete(messageId);
-                    
-                    const storedContext = messageContextMap.get(messageId);
-                    if (isMessageForCurrentView(storedContext)) {
-                        const finalMessageItem = refs.chatMessagesDiv.querySelector(`.message-item[data-message-id="${messageId}"]`);
-                        if (finalMessageItem) finalMessageItem.classList.remove('streaming');
-                    }
-                    
-                    streamingChunkQueues.delete(messageId);
-                }
-            }, globalSettings.smoothStreamIntervalMs !== undefined && globalSettings.smoothStreamIntervalMs >= 1 ? globalSettings.smoothStreamIntervalMs : 25);
-            streamingTimers.set(messageId, timerId);
+            streamingTimers.set(messageId, true); // 只是标记，不存储实际的 timerId
+            startGlobalRenderLoop(); // 启动或确保全局循环正在运行
         }
     } else {
         renderChunkDirectlyToDOM(messageId, textToAppend);
@@ -409,25 +743,17 @@ export function appendStreamChunk(messageId, chunkData, context) {
 }
 
 export async function finalizeStreamedMessage(messageId, finishReason, context) {
-    // Process remaining chunks
-    if (shouldEnableSmoothStreaming()) {
-        const queue = streamingChunkQueues.get(messageId);
-        if (queue && queue.length > 0) {
-            console.log(`[StreamManager] Processing ${queue.length} remaining chunks before finalization`);
-            while (queue.length > 0) {
-                processAndRenderSmoothChunk(messageId);
-            }
-            await new Promise(resolve => setTimeout(resolve, 50));
-        }
-    }
-    
-    // Stop timers
-    if (streamingTimers.has(messageId)) {
-        clearInterval(streamingTimers.get(messageId));
-        streamingTimers.delete(messageId);
-    }
+    // With the global render loop, we no longer need to manually drain the queue here or clear timers.
+    // The loop will continue to process chunks until the queue is empty and the message is finalized, then clean itself up.
     if (activeStreamingMessageId === messageId) {
         activeStreamingMessageId = null;
+    }
+    
+    // 🟢 清理节流定时器
+    const scrollTimer = scrollThrottleTimers.get(messageId);
+    if (scrollTimer) {
+        clearTimeout(scrollTimer);
+        scrollThrottleTimers.delete(messageId);
     }
     
     messageInitializationStatus.set(messageId, 'finalized');
@@ -495,8 +821,12 @@ export async function finalizeStreamedMessage(messageId, finishReason, context) 
             const contentDiv = messageItem.querySelector('.md-content');
             if (contentDiv) {
                 const globalSettings = refs.globalSettingsRef.get();
+                // Use the more thorough preprocessFullContent for the final render
                 const processedFinalText = refs.preprocessFullContent(finalFullText, globalSettings);
                 const rawHtml = markedInstance.parse(processedFinalText);
+                
+                // Perform the final, high-quality render using the original global refresh method.
+                // This ensures images, KaTeX, code highlighting, etc., are all processed correctly.
                 refs.setContentAndProcessImages(contentDiv, rawHtml, messageId);
                 
                 // Step 1: Run synchronous processors (KaTeX, hljs, etc.)
@@ -509,7 +839,8 @@ export async function finalizeStreamedMessage(messageId, finishReason, context) 
                     }
                 }, 0);
 
-                if (globalSettings.enableAgentBubbleTheme && refs.processAnimationsInContent) {
+                // Step 3: Process animations, scripts, and 3D scenes
+                if (refs.processAnimationsInContent) {
                     refs.processAnimationsInContent(contentDiv);
                 }
             }
@@ -531,9 +862,9 @@ export async function finalizeStreamedMessage(messageId, finishReason, context) 
         }
     }
     
-    // Only save history if it's not a temporary assistant chat
+    // 🟢 使用防抖保存
     if (storedContext.topicId !== 'assistant_chat') {
-        await saveHistoryForContext(storedContext, historyForThisMessage);
+        debouncedSaveHistory(storedContext, historyForThisMessage);
     }
     
     // Cleanup
@@ -542,9 +873,11 @@ export async function finalizeStreamedMessage(messageId, finishReason, context) 
     
     // Delayed cleanup
     setTimeout(() => {
+        messageDomCache.delete(messageId);
         messageInitializationStatus.delete(messageId);
         preBufferedChunks.delete(messageId);
         messageContextMap.delete(messageId);
+        viewContextCache.delete(messageId);
     }, 5000);
 }
 

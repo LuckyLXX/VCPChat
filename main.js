@@ -23,6 +23,7 @@ const regexHandlers = require('./modules/ipc/regexHandlers'); // Import regex ha
 const chatHandlers = require('./modules/ipc/chatHandlers'); // Import chat handlers
 const groupChatHandlers = require('./modules/ipc/groupChatHandlers'); // Import group chat handlers
 const sovitsHandlers = require('./modules/ipc/sovitsHandlers'); // Import SovitsTTS IPC handlers
+const promptHandlers = require('./modules/ipc/promptHandlers'); // Import prompt handlers
 const notesHandlers = require('./modules/ipc/notesHandlers'); // Import notes handlers
 const assistantHandlers = require('./modules/ipc/assistantHandlers'); // Import assistant handlers
 const musicHandlers = require('./modules/ipc/musicHandlers'); // Import music handlers
@@ -36,9 +37,10 @@ const chokidar = require('chokidar'); // 引入 chokidar
  
  // --- File Watcher ---
 let historyWatcher = null;
-let isInternalSaveExpected = false; // A one-shot flag to signal an internal save is happening.
-let internalSaveTimeout = null; // 🔧 新增：超时保护
-let isEditingInProgress = false; // 🔧 新增：编辑状态标识
+let lastInternalSaveTime = 0; // 🔧 改为时间戳记录
+let internalSaveTimeout = null; // 🔧 超时保护
+let isEditingInProgress = false; // 🔧 编辑状态标识
+const INTERNAL_SAVE_WINDOW_MS = 2000; // 🔧 内部保存时间窗口（2秒）
 
 const fileWatcher = {
   watchFile: (filePath, callback) => {
@@ -55,12 +57,12 @@ const fileWatcher = {
         }
     });
     historyWatcher.on('all', (event, path) => {
-      // 🔧 改进：检查多个条件来决定是否忽略事件
-      if (isInternalSaveExpected || isEditingInProgress) {
-        console.log(`[FileWatcher] Ignored ${isInternalSaveExpected ? 'internal save' : 'editing'} event '${event}' for: ${path}`);
-        if (isInternalSaveExpected) {
-          isInternalSaveExpected = false; // Consume the one-shot flag
-        }
+      // 🔧 改进：使用时间窗口而非一次性标志
+      const now = Date.now();
+      const isWithinSaveWindow = (now - lastInternalSaveTime) < INTERNAL_SAVE_WINDOW_MS;
+      
+      if (isWithinSaveWindow || isEditingInProgress) {
+        console.log(`[FileWatcher] Ignored ${isWithinSaveWindow ? 'internal save' : 'editing'} event '${event}' for: ${path} (time since last save: ${now - lastInternalSaveTime}ms)`);
         return;
       }
       console.log(`[FileWatcher] Detected external event '${event}' for: ${path}`);
@@ -76,19 +78,26 @@ const fileWatcher = {
     }
     // 🔧 清理状态
     isEditingInProgress = false;
+    lastInternalSaveTime = 0; // 重置时间戳
     if (internalSaveTimeout) {
       clearTimeout(internalSaveTimeout);
       internalSaveTimeout = null;
     }
   },
   signalInternalSave: () => {
-    isInternalSaveExpected = true;
-    // 🔧 设置超时保护，防止标志永远不被重置
+    // 🔧 记录内部保存时间戳
+    lastInternalSaveTime = Date.now();
+    console.log('[FileWatcher] Internal save signaled at:', lastInternalSaveTime);
+    
+    // 🔧 设置超时保护，防止时间窗口失效（虽然理论上不需要了）
     if (internalSaveTimeout) clearTimeout(internalSaveTimeout);
     internalSaveTimeout = setTimeout(() => {
-      isInternalSaveExpected = false;
-      console.log('[FileWatcher] Internal save flag auto-reset due to timeout');
-    }, 5000); // 5秒超时
+      // 这个超时主要是为了调试，正常情况下时间窗口会自然过期
+      const timeSinceLastSave = Date.now() - lastInternalSaveTime;
+      if (timeSinceLastSave >= INTERNAL_SAVE_WINDOW_MS) {
+        console.log('[FileWatcher] Internal save window naturally expired');
+      }
+    }, INTERNAL_SAVE_WINDOW_MS + 1000);
   },
   // 🔧 新增：编辑状态管理
   setEditingMode: (editing) => {
@@ -220,6 +229,17 @@ function createWindow() {
     });
 
     mainWindow.once('ready-to-show', () => {
+        // Signal the native splash screen to close by creating the ready file.
+        const readyFile = path.join(__dirname, '.vcp_ready');
+        fs.ensureFileSync(readyFile);
+        
+        // Clean up the file after a few seconds to prevent it from lingering.
+        setTimeout(() => {
+            if (fs.existsSync(readyFile)) {
+                fs.unlinkSync(readyFile);
+            }
+        }, 3000); // 3-second delay
+
         mainWindow.show();
     });
 
@@ -290,6 +310,14 @@ if (!gotTheLock) {
 
 
   app.whenReady().then(async () => { // Make the function async
+    // Handle the emergency close request from the splash screen
+    ipcMain.on('close-app', () => {
+        console.log('[Main] Received close-app request from splash screen. Quitting.');
+        app.quit();
+    });
+
+    // The native splash screen is started by the batch file, so no action is needed here.
+
     // Pre-warm the audio engine in the background. This doesn't block the main window.
     startAudioEngine().catch(err => {
         console.error('[Main] Failed to pre-warm audio engine on startup:', err);
@@ -550,7 +578,7 @@ if (!gotTheLock) {
     });
 
     windowHandlers.initialize(mainWindow, openChildWindows);
-    assistantHandlers.initialize({ SETTINGS_FILE });
+    await assistantHandlers.initialize({ SETTINGS_FILE });
     fileDialogHandlers.initialize(mainWindow, {
         getSelectionListenerStatus: assistantHandlers.getSelectionListenerStatus,
         stopSelectionListener: assistantHandlers.stopSelectionListener,
@@ -618,6 +646,7 @@ if (!gotTheLock) {
     emoticonHandlers.initialize({ SETTINGS_FILE, APP_DATA_ROOT_IN_PROJECT });
     emoticonHandlers.setupEmoticonHandlers();
     canvasHandlers.initialize({ mainWindow, openChildWindows, CANVAS_CACHE_DIR });
+    promptHandlers.initialize({ AGENT_DIR, APP_DATA_ROOT_IN_PROJECT });
 
     ipcMain.on('minimize-to-tray', () => {
         if (mainWindow) {
@@ -639,9 +668,8 @@ if (!gotTheLock) {
                     rendererProcess: mainWindow.webContents, // Pass the renderer process object
                     handleMusicControl: musicHandlers.handleMusicControl, // Inject the music control handler
                     handleDiceControl: diceHandlers.handleDiceControl, // Inject the dice control handler
-                    handleMusicControl: musicHandlers.handleMusicControl, // Inject the music control handler
-                    handleDiceControl: diceHandlers.handleDiceControl, // Inject the dice control handler
-                    handleCanvasControl: handleCanvasControl // Inject the new canvas control handler
+                    handleCanvasControl: handleCanvasControl, // Inject the canvas control handler
+                    handleFlowlockControl: handleFlowlockControl // Inject the flowlock control handler
                 };
                 distributedServer = new DistributedServer(config);
                 distributedServer.initialize();
@@ -721,6 +749,12 @@ app.on('window-all-closed', () => {
 });
 
 app.on('will-quit', () => {
+    // 0. Clean up the ready signal file for the native splash screen
+    const readyFile = path.join(__dirname, '.vcp_ready');
+    if (fs.existsSync(readyFile)) {
+        fs.unlinkSync(readyFile);
+    }
+
     // 1. 停止所有底层监听器
     console.log('[Main] App is quitting. Stopping all listeners...');
     assistantHandlers.stopSelectionListener();
@@ -989,3 +1023,112 @@ ipcMain.handle('interrupt-group-request', (event, messageId) => {
         return { success: false, error: 'Group chat module not initialized correctly.' };
     }
 });
+
+// --- Flowlock Control Handler (for Distributed Server) ---
+async function handleFlowlockControl(commandPayload) {
+    try {
+        const { command, agentId, topicId, prompt, promptSource, target, oldText, newText } = commandPayload;
+        
+        console.log(`[Main] handleFlowlockControl received command: ${command}`, commandPayload);
+        
+        if (!mainWindow || mainWindow.isDestroyed()) {
+            throw new Error('Main window is not available.');
+        }
+        
+        // For 'get' and 'status' commands, we need to wait for a response from renderer
+        if (command === 'get' || command === 'status') {
+            return new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => {
+                    reject(new Error(`${command === 'get' ? '获取输入框内容' : '获取心流锁状态'}超时`));
+                }, 5000); // 5 second timeout
+                
+                // Set up one-time listener for the response
+                const responseHandler = (event, responseData) => {
+                    clearTimeout(timeout);
+                    ipcMain.removeListener('flowlock-response', responseHandler);
+                    
+                    if (responseData.success) {
+                        if (command === 'get') {
+                            resolve({
+                                status: 'success',
+                                message: `输入框当前内容为: "${responseData.content}"`,
+                                content: responseData.content
+                            });
+                        } else if (command === 'status') {
+                            const statusInfo = responseData.status;
+                            const statusText = statusInfo.isActive
+                                ? `心流锁已启用 (Agent: ${statusInfo.agentId}, Topic: ${statusInfo.topicId}, 处理中: ${statusInfo.isProcessing ? '是' : '否'})`
+                                : '心流锁未启用';
+                            resolve({
+                                status: 'success',
+                                message: statusText,
+                                flowlockStatus: statusInfo
+                            });
+                        }
+                    } else {
+                        reject(new Error(responseData.error || `${command === 'get' ? '获取输入框内容' : '获取心流锁状态'}失败`));
+                    }
+                };
+                
+                ipcMain.on('flowlock-response', responseHandler);
+                
+                // Send command to renderer
+                mainWindow.webContents.send('flowlock-command', {
+                    command,
+                    agentId,
+                    topicId,
+                    prompt,
+                    promptSource,
+                    target,
+                    oldText,
+                    newText
+                });
+            });
+        }
+        
+        // For other commands, send and return immediately
+        mainWindow.webContents.send('flowlock-command', {
+            command,
+            agentId,
+            topicId,
+            prompt,
+            promptSource,
+            target,
+            oldText,
+            newText
+        });
+        
+        // Build natural language response for AI
+        let naturalResponse = '';
+        switch (command) {
+            case 'start':
+                naturalResponse = `已为 Agent "${agentId}" 的话题 "${topicId}" 启动心流锁。`;
+                break;
+            case 'stop':
+                naturalResponse = `已停止心流锁。`;
+                break;
+            case 'promptee':
+                naturalResponse = `已设置下次续写提示词为: "${prompt}"`;
+                break;
+            case 'prompter':
+                naturalResponse = `已从来源 "${promptSource}" 获取提示词。`;
+                break;
+            case 'clear':
+                naturalResponse = `已清空输入框中的所有提示词。`;
+                break;
+            case 'remove':
+                naturalResponse = `已从输入框中移除: "${target}"`;
+                break;
+            case 'edit':
+                naturalResponse = `已将 "${oldText}" 编辑为 "${newText}"`;
+                break;
+            default:
+                naturalResponse = `心流锁命令 "${command}" 已执行。`;
+        }
+        
+        return { status: 'success', message: naturalResponse };
+    } catch (error) {
+        console.error('[Main] handleFlowlockControl error:', error);
+        return { status: 'error', message: error.message };
+    }
+}
