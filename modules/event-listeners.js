@@ -11,9 +11,10 @@ export function setupEventListeners(deps) {
         // DOM Elements from a future dom-elements.js or passed directly
         chatMessagesDiv, sendMessageBtn, messageInput, attachFileBtn, globalSettingsBtn,
         globalSettingsForm, userAvatarInput, createNewAgentBtn, createNewGroupBtn,
-        currentItemActionBtn, clearNotificationsBtn, openAdminPanelBtn, toggleNotificationsBtn,
+        currentItemActionBtn, clearNotificationsBtn, openForumBtn, toggleNotificationsBtn,
         notificationsSidebar, agentSearchInput, minimizeToTrayBtn, addNetworkPathBtn,
         openTranslatorBtn, openNotesBtn, openMusicBtn, openCanvasBtn, toggleAssistantBtn,
+        leftSidebar, toggleSidebarBtn,
         enableContextSanitizerCheckbox, contextSanitizerDepthContainer, seamFixer,
 
         // State variables (passed via refs)
@@ -654,8 +655,8 @@ export function setupEventListeners(deps) {
         document.getElementById('notificationsList').innerHTML = '';
     });
 
-    if (openAdminPanelBtn) {
-        openAdminPanelBtn.style.display = 'inline-block';
+    if (openForumBtn) {
+        openForumBtn.style.display = 'inline-block';
         const enableMiddleClickCheckbox = document.getElementById('enableMiddleClickQuickAction');
         const middleClickContainer = document.getElementById('middleClickQuickActionContainer');
         const middleClickAdvancedContainer = document.getElementById('middleClickAdvancedContainer');
@@ -710,29 +711,12 @@ export function setupEventListeners(deps) {
             });
         }
 
-        openAdminPanelBtn.addEventListener('click', async () => {
-            const globalSettings = refs.globalSettings.get();
-            if (globalSettings.vcpServerUrl) {
-                if (window.electronAPI && window.electronAPI.sendOpenExternalLink) {
-                    try {
-                        const apiUrl = new URL(globalSettings.vcpServerUrl);
-                        let adminPanelUrl = `${apiUrl.protocol}//${apiUrl.host}`;
-                        if (!adminPanelUrl.endsWith('/')) {
-                            adminPanelUrl += '/';
-                        }
-                        adminPanelUrl += 'AdminPanel/';
-                        window.electronAPI.sendOpenExternalLink(adminPanelUrl);
-                    } catch (e) {
-                        console.error('构建管理面板URL失败:', e);
-                        uiHelperFunctions.showToastNotification('无法构建管理面板URL。请检查VCP服务器URL。', 'error');
-                    }
-                } else {
-                    console.warn('[Renderer] electronAPI.sendOpenExternalLink is not available.');
-                    uiHelperFunctions.showToastNotification('无法打开管理面板：功能不可用。', 'error');
-                }
+        openForumBtn.addEventListener('click', async () => {
+            if (window.electronAPI && window.electronAPI.openForumWindow) {
+                await window.electronAPI.openForumWindow();
             } else {
-                uiHelperFunctions.showToastNotification('请先在全局设置中配置VCP服务器URL！', 'error');
-                uiHelperFunctions.openModal('globalSettingsModal');
+                console.warn('[Renderer] electronAPI.openForumWindow is not available.');
+                uiHelperFunctions.showToastNotification('无法打开论坛：功能不可用。', 'error');
             }
         });
     }
@@ -822,6 +806,40 @@ export function setupEventListeners(deps) {
                 uiHelperFunctions.showToastNotification(`设置划词助手状态失败: ${result.error}`, 'error');
                 toggleAssistantBtn.classList.toggle('active', !isActive);
                 globalSettings.assistantEnabled = !isActive;
+            }
+        });
+
+        // 右键点击 - 切换侧边栏显示/隐藏
+        toggleAssistantBtn.addEventListener('contextmenu', (e) => {
+            e.preventDefault(); // 阻止默认的右键菜单
+            if (leftSidebar) {
+                const isActive = leftSidebar.classList.toggle('active');
+                const mainContent = document.querySelector('.main-content');
+                if (mainContent) {
+                    mainContent.classList.toggle('sidebar-active', isActive);
+                }
+                // 更新按钮状态
+                if (toggleSidebarBtn) {
+                    toggleSidebarBtn.classList.toggle('active', isActive);
+                }
+                
+                // 保存侧边栏状态到设置
+                const globalSettings = refs.globalSettings.get();
+                globalSettings.sidebarActive = isActive;
+                
+                // 异步保存设置
+                if (window.electronAPI && window.electronAPI.saveSettings) {
+                    window.electronAPI.saveSettings(globalSettings).then(result => {
+                        if (!result.success) {
+                            console.error('保存侧边栏状态失败:', result.error);
+                        }
+                    }).catch(error => {
+                        console.error('保存侧边栏状态时出错:', error);
+                    });
+                }
+                
+                // 显示操作提示
+                uiHelperFunctions.showToastNotification(`侧边栏已${isActive ? '显示' : '隐藏'}`, 'info');
             }
         });
     }

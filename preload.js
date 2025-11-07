@@ -75,6 +75,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     importRegexRules: (agentId) => ipcRenderer.invoke('import-regex-rules', agentId),
     updateAgentConfig: (agentId, updates) => ipcRenderer.invoke('update-agent-config', agentId, updates),
     
+    // [新增] 为全局仓库添加IPC接口
+    getGlobalWarehouse: () => ipcRenderer.invoke('get-global-warehouse'),
+    saveGlobalWarehouse: (data) => ipcRenderer.invoke('save-global-warehouse', data),
+    
     // Prompt Modules
     loadPresetPrompts: (presetPath) => ipcRenderer.invoke('load-preset-prompts', presetPath),
     loadPresetContent: (filePath) => ipcRenderer.invoke('load-preset-content', filePath),
@@ -88,6 +92,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     createNewTopicForAgent: (agentId, topicName, refreshTimestamp) => ipcRenderer.invoke('create-new-topic-for-agent', agentId, topicName, refreshTimestamp),
     saveAgentTopicTitle: (agentId, topicId, newTitle) => ipcRenderer.invoke('save-agent-topic-title', agentId, topicId, newTitle),
     deleteTopic: (agentId, topicId) => ipcRenderer.invoke('delete-topic', agentId, topicId),
+    getUnreadTopicCounts: () => ipcRenderer.invoke('get-unread-topic-counts'),
 
     // Chat History
     getChatHistory: (agentId, topicId) => ipcRenderer.invoke('get-chat-history', agentId, topicId),
@@ -298,6 +303,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     stopSpeechRecognition: () => ipcRenderer.send('stop-speech-recognition'),
     onSpeechRecognitionResult: (callback) => ipcRenderer.on('speech-recognition-result', (_event, text) => callback(text)),
 
+    // Forum Module
+    openForumWindow: () => ipcRenderer.send('open-forum-window'),
+    loadForumConfig: () => ipcRenderer.invoke('load-forum-config'),
+    saveForumConfig: (config) => ipcRenderer.invoke('save-forum-config', config),
+    loadAgentsList: () => ipcRenderer.invoke('load-agents-list'),
+    loadUserAvatar: () => ipcRenderer.invoke('load-user-avatar'),
+    loadAgentAvatar: (folderName) => ipcRenderer.invoke('load-agent-avatar', folderName),
+
     // Canvas Module
     openCanvasWindow: () => ipcRenderer.invoke('open-canvas-window'),
     canvasReady: () => ipcRenderer.send('canvas-ready'),
@@ -306,6 +319,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     saveCanvasFile: (file) => ipcRenderer.send('save-canvas-file', file),
     onCanvasLoadData: (callback) => ipcRenderer.on('canvas-load-data', (_event, data) => callback(data)),
     onCanvasFileChanged: (callback) => ipcRenderer.on('canvas-file-changed', (_event, file) => callback(file)),
+    onExternalFileChanged: (callback) => ipcRenderer.on('external-file-changed', (_event, file) => callback(file)), // Add this line
     onCanvasContentUpdate: (callback) => ipcRenderer.on('canvas-content-update', (_event, data) => callback(data)),
     onLoadCanvasFileByPath: (callback) => ipcRenderer.on('load-canvas-file-by-path', (_event, filePath) => callback(filePath)),
     onCanvasWindowClosed: (callback) => ipcRenderer.on('canvas-window-closed', (_event) => callback()),

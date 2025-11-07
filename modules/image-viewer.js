@@ -25,6 +25,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     const colorPicker = document.getElementById('colorPicker');
     const brushSize = document.getElementById('brushSize');
     const brushPreview = document.getElementById('brushPreview');
+    const colorCodeDisplay = document.getElementById('colorCodeDisplay');
+
+    // OCR 元素
+    const ocrButton = document.getElementById('ocrButton');
+    const ocrResultModal = document.getElementById('ocrResultModal');
+    const ocrModalClose = document.getElementById('ocrModalClose');
+    const ocrResultText = document.getElementById('ocrResultText');
+    const copyOcrText = document.getElementById('copyOcrText');
 
     // 状态变量
     let currentTool = 'select';
@@ -184,6 +192,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const color = getColorAtPoint(startX, startY);
             currentColor = color;
             colorPicker.value = color;
+            colorCodeDisplay.textContent = color.toUpperCase();
             setTool('brush');
             return;
         }
@@ -276,6 +285,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     colorPicker.addEventListener('input', (e) => {
         currentColor = e.target.value;
         brushPreview.style.backgroundColor = currentColor;
+        colorCodeDisplay.textContent = currentColor.toUpperCase();
     });
 
     brushSize.addEventListener('input', (e) => {
@@ -288,6 +298,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     brushPreview.style.width = currentBrushSize + 'px';
     brushPreview.style.height = currentBrushSize + 'px';
     brushPreview.style.backgroundColor = currentColor;
+    colorCodeDisplay.textContent = currentColor.toUpperCase();
+
+    // 点击色码复制
+    colorCodeDisplay.addEventListener('click', () => {
+        navigator.clipboard.writeText(currentColor).then(() => {
+            const originalText = colorCodeDisplay.textContent;
+            colorCodeDisplay.textContent = 'Copied!';
+            setTimeout(() => {
+                colorCodeDisplay.textContent = originalText;
+            }, 1000);
+        });
+    });
 
     // 撤销/重做
     undoBtn.addEventListener('click', () => {
@@ -471,15 +493,25 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     });
 
-    // 复制功能（原图）
+    // 复制功能（合并编辑后的图）
     copyButton.addEventListener('click', async () => {
         if (!imgElement.src) return;
-        
+
         const originalText = copyButton.innerHTML;
         try {
-            const response = await fetch(imgElement.src);
-            const blob = await response.blob();
-            const item = new ClipboardItem({ [blob.type]: blob });
+            // 创建合成画布
+            const mergedCanvas = document.createElement('canvas');
+            mergedCanvas.width = imgElement.naturalWidth;
+            mergedCanvas.height = imgElement.naturalHeight;
+            const mergedCtx = mergedCanvas.getContext('2d');
+            
+            // 绘制原图和编辑层
+            mergedCtx.drawImage(imgElement, 0, 0);
+            mergedCtx.drawImage(canvas, 0, 0);
+            
+            // 转换为 blob 并复制
+            const blob = await new Promise(resolve => mergedCanvas.toBlob(resolve, 'image/png'));
+            const item = new ClipboardItem({ 'image/png': blob });
             await navigator.clipboard.write([item]);
             
             copyButton.innerHTML = '<svg viewBox="0 0 24 24" style="width:18px; height:18px; fill:currentColor;"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"></path></svg> 已复制';
@@ -494,11 +526,86 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 下载功能
     downloadButton.addEventListener('click', () => {
         if (!imgElement.src) return;
-        
+
+        // 创建合成画布
+        const mergedCanvas = document.createElement('canvas');
+        mergedCanvas.width = imgElement.naturalWidth;
+        mergedCanvas.height = imgElement.naturalHeight;
+        const mergedCtx = mergedCanvas.getContext('2d');
+
+        // 绘制原图和编辑层
+        mergedCtx.drawImage(imgElement, 0, 0);
+        mergedCtx.drawImage(canvas, 0, 0);
+
+        // 创建下载链接并点击
         const link = document.createElement('a');
-        link.href = imgElement.src;
+        link.href = mergedCanvas.toDataURL('image/png');
         link.download = decodeURIComponent(imageTitle) || 'image.png';
         link.click();
+    });
+
+    // ========== OCR 功能 ==========
+    ocrButton.addEventListener('click', async () => {
+        if (!imgElement.src) return;
+
+        const originalHtml = ocrButton.innerHTML;
+        ocrButton.innerHTML = '识别中...';
+        ocrButton.disabled = true;
+
+        try {
+            const { data: { text } } = await Tesseract.recognize(
+                imgElement.src,
+                'chi_sim+eng', // 识别简体中文和英文
+                {
+                    logger: m => {
+                        console.log(m);
+                        if (m.status === 'recognizing text') {
+                            const progress = (m.progress * 100).toFixed(0);
+                            ocrButton.innerHTML = `识别中 ${progress}%`;
+                        }
+                    }
+                }
+            );
+            
+            // 清理文本：去除多余的空格和空行
+            const cleanedText = text.replace(/ /g, '').replace(/\n{2,}/g, '\n');
+            ocrResultText.value = cleanedText;
+            ocrResultModal.style.display = 'block';
+
+        } catch (err) {
+            console.error('OCR 失败:', err);
+            ocrResultText.value = '文字识别失败: ' + err.message;
+            ocrResultModal.style.display = 'block';
+        } finally {
+            ocrButton.innerHTML = originalHtml;
+            ocrButton.disabled = false;
+        }
+    });
+
+    // 关闭 OCR 弹窗
+    ocrModalClose.addEventListener('click', () => {
+        ocrResultModal.style.display = 'none';
+    });
+
+    // 点击弹窗外部关闭
+    window.addEventListener('click', (event) => {
+        if (event.target == ocrResultModal) {
+            ocrResultModal.style.display = 'none';
+        }
+    });
+
+    // 复制 OCR 文本
+    copyOcrText.addEventListener('click', async () => {
+        try {
+            await navigator.clipboard.writeText(ocrResultText.value);
+            const originalText = copyOcrText.textContent;
+            copyOcrText.textContent = '已复制!';
+            setTimeout(() => {
+                copyOcrText.textContent = originalText;
+            }, 2000);
+        } catch (err) {
+            console.error('复制 OCR 文本失败:', err);
+        }
     });
 
     // ========== 键盘快捷键 ==========
