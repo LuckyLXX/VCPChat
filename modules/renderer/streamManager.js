@@ -190,14 +190,20 @@ function applyStreamingPreprocessors(text) {
     SPEAKER_TAG_REGEX.lastIndex = 0;
     NEWLINE_AFTER_CODE_REGEX.lastIndex = 0;
     SPACE_AFTER_TILDE_REGEX.lastIndex = 0;
-    CODE_MARKER_INDENT_REGEX.lastIndex = 0;
     IMG_CODE_SEPARATOR_REGEX.lastIndex = 0;
     
-    return text
+    let processedText = text;
+
+    // 🟢 新增：在流式处理中也修复错误的缩进代码块
+    // 🟢 使用精细化的缩进处理，只处理HTML标签
+    if (refs.deIndentMisinterpretedCodeBlocks) {
+        processedText = refs.deIndentMisinterpretedCodeBlocks(processedText);
+    }
+    
+    return processedText
         .replace(SPEAKER_TAG_REGEX, '')
         .replace(NEWLINE_AFTER_CODE_REGEX, '$1\n')
         .replace(SPACE_AFTER_TILDE_REGEX, '$1~ ')
-        .replace(CODE_MARKER_INDENT_REGEX, '$2')
         .replace(IMG_CODE_SEPARATOR_REGEX, '$1\n\n<!-- VCP-Renderer-Separator -->\n\n$2');
 }
 
@@ -366,6 +372,18 @@ function renderStreamFrame(messageId) {
                     return false;
                 }
                 return true;
+            },
+            
+            onNodeAdded: function(node) {
+                // Animate block-level elements as they are added to the DOM
+                if (node.nodeType === 1 && /^(P|DIV|UL|OL|PRE|BLOCKQUOTE|H[1-6]|TABLE|FIGURE)$/.test(node.tagName)) {
+                    node.classList.add('vcp-stream-element-fade-in');
+                    // Clean up the class after the animation completes to prevent re-triggering
+                    node.addEventListener('animationend', () => {
+                        node.classList.remove('vcp-stream-element-fade-in');
+                    }, { once: true });
+                }
+                return node;
             }
         });
     } else {

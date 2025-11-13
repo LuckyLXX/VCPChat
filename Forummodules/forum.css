@@ -652,10 +652,11 @@ img[src*="file://"] {
     background: rgba(229, 115, 115, 0.15); /* Subtle red glass background */
     color: var(--danger-color);
     border: 1px solid var(--danger-color);
-    padding: 5px 12px;
+    padding: 8px 20px;
     border-radius: 8px;
     cursor: pointer;
-    font-size: 0.75rem;
+    font-size: 0.9rem;
+    font-weight: bold;
     transition: all 0.3s ease;
     opacity: 0.8; /* Slightly more visible */
 }
@@ -671,10 +672,12 @@ img[src*="file://"] {
 /* A more robust selector for the delete button, overriding the base .jelly-btn styles without !important */
 .jelly-btn.delete-post-btn {
     width: auto;
-    padding: 10px 25px;
-    margin-top: 20px;
+    padding: 8px 20px;
+    margin-top: 0;
     background: var(--danger-color, #e57373); /* Provide a fallback color */
     color: white;
+    font-size: 0.9rem;
+    border-radius: 8px;
 }
 
 .jelly-btn.delete-post-btn:hover {
@@ -767,4 +770,124 @@ img[src*="file://"] {
 
 .nav-icon-btn.spinning {
     animation: spin 1s infinite linear;
+}
+
+/* --- Edit Mode Styles --- */
+.edit-btn {
+    background: rgba(74, 144, 226, 0.15); /* Subtle blue glass background */
+    color: var(--accent-color);
+    border: 1px solid var(--accent-color);
+    padding: 8px 20px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: bold;
+    transition: all 0.3s ease;
+    opacity: 0.8;
+    margin-left: 10px; /* Space from delete button */
+}
+
+.edit-btn:hover {
+    background: var(--accent-color);
+    color: white;
+    opacity: 1;
+    transform: scale(1.05);
+    box-shadow: 0 4px 12px rgba(74, 144, 226, 0.4);
+}
+
+.edit-textarea {
+    width: 100%;
+    min-height: 150px;
+    padding: 15px;
+    margin-bottom: 15px;
+    background: var(--glass-bg);
+    border: 1px solid var(--accent-color); /* Highlight that it's in edit mode */
+    border-radius: 12px;
+    color: var(--text-primary);
+    font-size: 1rem;
+    resize: vertical;
+    font-family: inherit;
+}
+
+.edit-textarea:focus {
+    outline: none;
+    background: var(--glass-shine);
+}
+
+.edit-controls {
+    display: flex;
+    justify-content: flex-end;
+    gap: 15px;
+    margin-top: 10px;
+}
+
+.post-actions {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    margin-top: 20px;
+    padding-top: 20px;
+    border-top: 1px solid var(--glass-border);
+}
+
+
+/* --- Markdown Table Styles --- */
+.post-preview table, .reply-content table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 20px 0;
+    font-size: 0.95rem;
+    background: rgba(0,0,0,0.1);
+    border-radius: 12px;
+    overflow: hidden; /* Ensures border-radius is respected */
+}
+
+.post-preview th, .reply-content th,
+.post-preview td, .reply-content td {
+    border: 1px solid var(--glass-border);
+    padding: 12px 15px;
+    text-align: left;
+}
+
+.post-preview th, .reply-content th {
+    background-color: rgba(0,0,0,0.2);
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.post-preview tr:nth-child(even), .reply-content tr:nth-child(even) {
+    background-color: rgba(0,0,0,0.05);
+}
+
+.post-preview tr:hover, .reply-content tr:hover {
+    background-color: var(--glass-shine);
+}
+
+/* --- NEW: Dual Avatar Styles --- */
+.author-info-with-time {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1;
+}
+
+.time-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.meta-separator {
+    width: 2px;
+    height: 40px;
+    background: linear-gradient(to bottom, transparent, var(--glass-border) 20%, var(--glass-border) 80%, transparent);
+    margin: 0 15px;
+    flex-shrink: 0;
+}
+
+/* Ensure the post-meta container uses flexbox for dual layout */
+.post-card .post-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
 }

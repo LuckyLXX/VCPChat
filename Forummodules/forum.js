@@ -69,6 +69,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (settings?.currentThemeMode) applyTheme(settings.currentThemeMode);
         window.electronAPI?.onThemeUpdated(applyTheme); // Listen for live theme changes
     } catch (e) { /* ignore */ }
+
+    // Intercept external links and open them in the default browser
+    document.body.addEventListener('click', (event) => {
+        const link = event.target.closest('a');
+        // Check if it's an external link
+        if (link && (link.protocol === 'http:' || link.protocol === 'https:')) {
+            event.preventDefault();
+            window.electronAPI?.openExternal(link.href);
+        }
+    });
 });
 
 function handleResize() {
@@ -273,12 +283,17 @@ function extractEmoticonInfo(url) {
 }
 
 function fixEmoticonUrl(originalSrc) {
-    if (emoticonLibrary.length === 0) return originalSrc;
+    console.log(`[Forum Debug] Starting fix for: ${originalSrc}. Library size: ${emoticonLibrary.length}`);
+    if (emoticonLibrary.length === 0) {
+        console.log('[Forum Debug] Library is empty. Aborting.');
+        return originalSrc;
+    }
 
     // Quick check: if URL is already perfect
     try {
         const decodedOriginalSrc = decodeURIComponent(originalSrc);
         if (emoticonLibrary.some(item => decodeURIComponent(item.url) === decodedOriginalSrc)) {
+            console.log('[Forum Debug] Perfect match found. Aborting.');
             return originalSrc;
         }
     } catch (e) { /* ignore */ }
@@ -286,6 +301,7 @@ function fixEmoticonUrl(originalSrc) {
     // Check if it's likely an emoticon URL
     try {
         if (!decodeURIComponent(originalSrc).includes('表情包')) {
+            console.log('[Forum Debug] URL does not contain "表情包". Aborting.');
             return originalSrc;
         }
     } catch (e) {
@@ -294,7 +310,11 @@ function fixEmoticonUrl(originalSrc) {
 
     // Extract info and find best match
     const searchInfo = extractEmoticonInfo(originalSrc);
-    if (!searchInfo.filename) return originalSrc;
+    if (!searchInfo.filename) {
+        console.log('[Forum Debug] Could not extract filename. Aborting.');
+        return originalSrc;
+    }
+    console.log(`[Forum Debug] Searching for package: "${searchInfo.packageName}", filename: "${searchInfo.filename}"`);
 
     let bestMatch = null;
     let highestScore = -1;
@@ -319,12 +339,15 @@ function fixEmoticonUrl(originalSrc) {
             bestMatch = item;
         }
     }
+    
+    console.log(`[Forum Debug] Best match: ${bestMatch ? bestMatch.filename : 'None'}. Score: ${highestScore.toFixed(2)}`);
 
     if (bestMatch && highestScore > 0.6) {
         console.log('[Forum] Fixed emoticon URL:', originalSrc, '->', bestMatch.url);
         return bestMatch.url;
     }
-
+    
+    console.log('[Forum Debug] No suitable match found.');
     return originalSrc;
 }
 
@@ -335,7 +358,7 @@ function setupEmoticonFixer(container) {
         // First, clean up any malformed URLs (e.g., extra backslashes from AI output)
         if (img.src) {
             // Remove escaped quotes and backslashes that might appear in URLs
-            let cleanedSrc = img.src.replace(/\\"/g, '"').replace(/\\\\/g, '/').replace(/\\/g, '');
+            let cleanedSrc = img.src.replace(/\\"/g, '"').replace(/\\\\/g, '/').replace(/\\/g, '/');
             
             // If the URL was cleaned, update it immediately
             if (cleanedSrc !== img.src) {
@@ -347,7 +370,16 @@ function setupEmoticonFixer(container) {
         // Then set up error handling for emoticon fixing
         img.addEventListener('error', function() {
             const originalSrc = this.src;
-            if (originalSrc && originalSrc.includes('表情包')) {
+            let isEmoticonUrl = false;
+            try {
+                // Decode the URL first, as the browser might have encoded special characters.
+                isEmoticonUrl = decodeURIComponent(originalSrc).includes('表情包');
+            } catch (e) {
+                // Fallback for malformed URIs, check for the encoded version of "表情包"
+                isEmoticonUrl = originalSrc.includes('%E8%A1%A8%E6%83%85%E5%8C%85');
+            }
+
+            if (originalSrc && isEmoticonUrl) {
                 const fixedSrc = fixEmoticonUrl(originalSrc);
                 if (fixedSrc !== originalSrc) {
                     console.log('[Forum] Attempting to fix broken emoticon:', originalSrc);
@@ -361,6 +393,15 @@ function setupEmoticonFixer(container) {
 function setupImageViewer(container) {
     const images = container.querySelectorAll('img');
     images.forEach(img => {
+        // NEW: Universal URL cleaning for file paths (e.g., Windows backslashes)
+        if (img.src && img.src.includes('\\')) {
+            let cleanedSrc = img.src.replace(/\\/g, '/');
+            if (cleanedSrc !== img.src) {
+                console.log('[Forum] Universal URL cleaning:', img.src, '->', cleanedSrc);
+                img.src = cleanedSrc;
+            }
+        }
+        
         // Exclude avatars from the image viewer functionality
         if (img.closest('.author-avatar, .reply-avatar')) {
             return;
@@ -543,7 +584,10 @@ function renderWaterfall(postsToRender) {
     const sorted = [...postsToRender].sort((a, b) => {
         if (a.title.includes('[置顶]') && !b.title.includes('[置顶]')) return -1;
         if (!a.title.includes('[置顶]') && b.title.includes('[置顶]')) return 1;
-        return new Date(b.lastReplyAt || b.timestamp) - new Date(a.lastReplyAt || a.timestamp);
+        // Use the new robust date parser. Fallback to epoch start if date is invalid.
+        const dateB = parseForumDate(b.mtime || b.lastReplyAt || b.timestamp) || new Date(0);
+        const dateA = parseForumDate(a.mtime || a.lastReplyAt || a.timestamp) || new Date(0);
+        return dateB - dateA;
     });
 
     sorted.forEach((post, index) => {
@@ -559,8 +603,55 @@ function createPostCard(post, index) {
     const delay = index < 20 ? index * 0.05 : 0;
     el.style.animationDelay = `${delay}s`;
     
-    const hue = post.author.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) % 360;
-    const avatarColor = `hsl(${hue}, 70%, 60%)`;
+    // Backend returns lastReplyBy and lastReplyAt
+    const displayDate = post.mtime || post.lastReplyAt || post.timestamp;
+    const hasReply = post.lastReplyAt && post.timestamp && post.lastReplyAt !== post.timestamp;
+    
+    // Use lastReplyBy from backend API
+    const lastReplier = post.lastReplyBy;
+    const hasNewReplier = hasReply && lastReplier && lastReplier !== post.author;
+
+    let metaHTML = '';
+
+    if (hasNewReplier) {
+        const authorHue = post.author.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) % 360;
+        const authorAvatarColor = `hsl(${authorHue}, 70%, 60%)`;
+        const replierHue = lastReplier.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) % 360;
+        const replierAvatarColor = `hsl(${replierHue}, 70%, 60%)`;
+
+        metaHTML = `
+            <div class="author-info-with-time">
+                <div class="author-avatar loading-avatar" style="background: ${authorAvatarColor}" data-author="${escapeHtml(post.author)}">${post.author.slice(0,1).toUpperCase()}</div>
+                <div class="time-info">
+                    <div style="font-size: 0.8em; opacity: 0.7;">发帖于</div>
+                    <div>${formatDate(post.timestamp)}</div>
+                </div>
+            </div>
+            <div class="meta-separator"></div>
+            <div class="author-info-with-time">
+                <div class="author-avatar loading-avatar" style="background: ${replierAvatarColor}" data-author="${escapeHtml(lastReplier)}">${lastReplier.slice(0,1).toUpperCase()}</div>
+                <div class="time-info">
+                    <div style="font-size: 0.8em; opacity: 0.7;">最后回复</div>
+                    <div>${formatDate(displayDate)}</div>
+                </div>
+            </div>
+        `;
+    } else {
+        const authorHue = post.author.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) % 360;
+        const authorAvatarColor = `hsl(${authorHue}, 70%, 60%)`;
+        const timestampLabel = hasReply ? '最后回复' : '发帖于';
+
+        metaHTML = `
+            <div class="meta-left">
+                <div class="author-avatar loading-avatar" style="background: ${authorAvatarColor}" data-author="${escapeHtml(post.author)}">${post.author.slice(0,1).toUpperCase()}</div>
+                <span>${escapeHtml(post.author)}</span>
+            </div>
+            <div style="text-align: right;">
+                <div style="font-size: 0.8em; opacity: 0.7;">${timestampLabel}</div>
+                <div>${formatDate(displayDate)}</div>
+            </div>
+        `;
+    }
 
     el.innerHTML = `
         <div class="post-card-header">
@@ -571,18 +662,17 @@ function createPostCard(post, index) {
             点击展开查看详情...
         </div>
         <div class="post-meta">
-            <div class="meta-left">
-                <div class="author-avatar loading-avatar" style="background: ${avatarColor}" data-author="${escapeHtml(post.author)}">${post.author.slice(0,1).toUpperCase()}</div>
-                <span>${escapeHtml(post.author)}</span>
-            </div>
-            <span>${formatDate(post.lastReplyAt || post.timestamp)}</span>
+            ${metaHTML}
         </div>
     `;
 
     el.addEventListener('click', (e) => expandPost(post, el));
     
-    // Async load avatar
-    loadAvatarForElement(el.querySelector('.author-avatar'), post.author);
+    // Async load avatar(s)
+    const avatars = el.querySelectorAll('.author-avatar');
+    avatars.forEach(avatarEl => {
+        loadAvatarForElement(avatarEl, avatarEl.dataset.author);
+    });
     
     return el;
 }
@@ -675,16 +765,44 @@ activePostOverlay.addEventListener('click', (e) => {
 
 document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && activePostOverlay.classList.contains('active')) {
-        closeExpandedPost();
+        const activeEditingArea = activePostOverlay.querySelector('.edit-textarea');
+        if (activeEditingArea) {
+            // If in edit mode, find the corresponding cancel button and trigger it
+            const cancelButton = activeEditingArea.parentElement.querySelector('.cancel-edit-btn');
+            if (cancelButton) {
+                cancelButton.click();
+            }
+        } else {
+            // Otherwise, close the post
+            closeExpandedPost();
+        }
     }
 });
 
 function enhanceMarkdown(markdown) {
+    // NEW: Fix local file path images by replacing backslashes with forward slashes.
+    markdown = markdown.replace(/(!\[[^\]]*?\]\()(file:\/\/.*?)(\))/g, (match, prefix, url, suffix) => {
+        return prefix + url.replace(/\\/g, '/') + suffix;
+    });
+
+    // NEW: Prevent indented HTML tags from being treated as code blocks
+    const htmlTagRegex = /^\s*<\/?(div|p|img|span|a|h[1-6]|ul|ol|li|table|tr|td|th|section|article|header|footer|nav|aside|main|figure|figcaption|blockquote|pre|code|style|script|button|form|input|textarea|select|label|iframe|video|audio|canvas|svg)[\s>\/]/i;
+    
+    let lines = markdown.split('\n');
+    let deIndentedMarkdown = lines.map(line => {
+        // Check if the line starts with whitespace followed by a known HTML tag
+        if (htmlTagRegex.test(line)) {
+            // Remove leading whitespace
+            return line.trimStart();
+        }
+        return line;
+    }).join('\n');
+
     // To prevent breaking HTML attributes, temporarily replace all HTML tags with placeholders.
     const htmlTags = [];
-    const htmlTagRegex = /<[^>]+>/g;
+    const htmlTagRegexGlobal = /<[^>]+>/g;
 
-    let processed = markdown.replace(htmlTagRegex, (match) => {
+    let processed = deIndentedMarkdown.replace(htmlTagRegexGlobal, (match) => {
         htmlTags.push(match);
         return `__HTML_PLACEHOLDER_${htmlTags.length - 1}__`;
     });
@@ -750,17 +868,23 @@ function renderFullContent(container, markdown, uid) {
     // --- END NEW ---
 
     previewEl.innerHTML = window.marked ? marked.parse(enhanceMarkdown(postContentMd)) : `<pre>${escapeHtml(postContentMd)}</pre>`;
+    previewEl.dataset.rawContent = postContentMd; // Store raw content for editing
     
     // Setup emoticon fixer for main content
     setupEmoticonFixer(previewEl);
     setupImageViewer(previewEl);
 
-    // Add delete post button after main content
-    const deletePostBtn = document.createElement('button');
-    deletePostBtn.className = 'jelly-btn delete-post-btn';
-    deletePostBtn.innerHTML = '🗑️ 删除整个帖子';
-    deletePostBtn.addEventListener('click', () => handleDeletePost(uid));
-    previewEl.appendChild(deletePostBtn);
+    // Add post actions (edit/delete)
+    const postActions = document.createElement('div');
+    postActions.className = 'post-actions';
+    postActions.innerHTML = `
+        <button class="jelly-btn delete-post-btn">🗑️ 删除帖子</button>
+        <button class="edit-btn">✏️ 编辑正文</button>
+    `;
+    postActions.querySelector('.delete-post-btn').addEventListener('click', () => handleDeletePost(uid));
+    postActions.querySelector('.edit-btn').addEventListener('click', (e) => toggleEditMode(e.currentTarget.closest('.expanded-card'), previewEl, uid));
+    previewEl.appendChild(postActions);
+
 
     if (repliesMd.trim()) {
         const replyList = document.createElement('div');
@@ -771,15 +895,11 @@ function renderFullContent(container, markdown, uid) {
             const floor = i + 1;
             
             // Extract username from reply markdown
-            // Format: "**回复者:** 小吉" (bold text followed by username)
             let replyUsername = '';
-            
-            // Try to match "**回复者:** username" format
             const replyerMatch = replyMd.match(/\*\*回复者[：:]\*\*\s*([^\s\n*]+)/);
             if (replyerMatch) {
                 replyUsername = replyerMatch[1];
             } else {
-                // Fallback: try to match any bold text that might be a username
                 const boldMatch = replyMd.match(/\*\*([^*]+)\*\*/);
                 if (boldMatch && !boldMatch[1].includes('回复者') && !boldMatch[1].includes('时间')) {
                     replyUsername = boldMatch[1];
@@ -792,16 +912,24 @@ function renderFullContent(container, markdown, uid) {
             const replyItem = document.createElement('div');
             replyItem.className = 'reply-item glass';
             replyItem.style.animationDelay = `${i * 0.1}s`;
+
+            const metadataEndIndex = replyMd.indexOf('\n\n');
+            const replyRawContent = metadataEndIndex !== -1 ? replyMd.substring(metadataEndIndex + 2) : replyMd;
+
             replyItem.innerHTML = `
                 <div class="reply-header">
                     <div style="display: flex; align-items: center; gap: 10px;">
                         <div class="reply-avatar loading-avatar" style="background: ${avatarColor}" data-author="${escapeHtml(replyUsername)}">${replyUsername ? replyUsername.slice(0,1).toUpperCase() : '#'}</div>
                         <span>#${floor}</span>
                     </div>
-                    <button class="delete-floor-btn" data-uid="${uid}" data-floor="${floor}">删除此楼层</button>
+                    <div>
+                        <button class="delete-floor-btn" data-uid="${uid}" data-floor="${floor}">删除</button>
+                        <button class="edit-btn" data-uid="${uid}" data-floor="${floor}">编辑</button>
+                    </div>
                 </div>
                 <div class="reply-content">${window.marked ? marked.parse(enhanceMarkdown(replyMd.trim())) : `<pre>${escapeHtml(replyMd.trim())}</pre>`}</div>
             `;
+            replyItem.querySelector('.reply-content').dataset.rawContent = replyRawContent; // Store raw content
             replyList.appendChild(replyItem);
             
             // Load avatar for reply
@@ -811,21 +939,15 @@ function renderFullContent(container, markdown, uid) {
             }
             
             // Setup emoticon fixer for reply content
-            const replyContent = replyItem.querySelector('.reply-content');
-            if (replyContent) {
-                setupEmoticonFixer(replyContent);
-                setupImageViewer(replyContent);
+            const replyContentEl = replyItem.querySelector('.reply-content');
+            if (replyContentEl) {
+                setupEmoticonFixer(replyContentEl);
+                setupImageViewer(replyContentEl);
             }
             
-            // Add event listener for delete floor button
-            const deleteBtn = replyItem.querySelector('.delete-floor-btn');
-            deleteBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const button = e.currentTarget;
-                const postUid = button.dataset.uid;
-                const floorNum = button.dataset.floor;
-                handleDeleteFloor(postUid, floorNum, container);
-            });
+            // Add event listeners for action buttons
+            replyItem.querySelector('.delete-floor-btn').addEventListener('click', (e) => handleDeleteFloor(uid, floor, container));
+            replyItem.querySelector('.edit-btn').addEventListener('click', (e) => toggleEditMode(e.currentTarget.closest('.expanded-card'), replyContentEl, uid, floor));
         });
         container.appendChild(replyList);
     }
@@ -844,6 +966,82 @@ function renderFullContent(container, markdown, uid) {
     
     container.querySelector('#quick-reply-btn').addEventListener('click', () => handleQuickReply(uid, container));
 }
+
+// ========== Edit, Delete, Reply Logic ==========
+
+function toggleEditMode(card, contentEl, uid, floor = null) {
+    const isEditing = contentEl.querySelector('.edit-textarea');
+    if (isEditing) return; // Already in edit mode
+
+    const rawContent = contentEl.dataset.rawContent || '';
+    const originalHtml = contentEl.innerHTML;
+
+    // Store the parent of the content element before we change it
+    const contentParent = contentEl.parentNode;
+
+    contentEl.innerHTML = `
+        <textarea class="edit-textarea">${escapeHtml(rawContent)}</textarea>
+        <div class="edit-controls">
+            <button class="jelly-btn cancel-edit-btn" style="width: auto; padding: 8px 20px; background: var(--glass-bg);">取消</button>
+            <button class="jelly-btn save-edit-btn" style="width: auto; padding: 8px 20px;">确认</button>
+        </div>
+    `;
+
+    contentEl.querySelector('.cancel-edit-btn').addEventListener('click', () => {
+        contentEl.innerHTML = originalHtml;
+        // After restoring HTML, we MUST re-find the button and re-attach the listener
+        // because the old button element was destroyed.
+        let editBtn;
+        if (floor) {
+            // Find the specific edit button for this floor
+            editBtn = contentParent.querySelector(`.edit-btn[data-floor="${floor}"]`);
+        } else {
+            // Find the main post's edit button
+            editBtn = contentParent.querySelector('.post-actions .edit-btn');
+        }
+        
+        if (editBtn) {
+            editBtn.addEventListener('click', (e) => toggleEditMode(card, contentEl, uid, floor));
+        }
+    });
+
+    contentEl.querySelector('.save-edit-btn').addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        btn.textContent = '保存中...';
+        btn.disabled = true;
+        const newContent = contentEl.querySelector('.edit-textarea').value;
+        await handleSaveEdit(uid, newContent, floor, card);
+    });
+}
+
+async function handleSaveEdit(uid, content, floor, card) {
+    try {
+        const payload = { content };
+        if (floor) {
+            payload.floor = floor;
+        }
+        await apiFetch(`/post/${uid}`, {
+            method: 'PATCH',
+            body: JSON.stringify(payload)
+        });
+        
+        // Reload the entire post content to reflect changes
+        const data = await apiFetch(`/post/${uid}`);
+        card.querySelectorAll('.reply-list, .reply-area-fixed').forEach(e => e.remove());
+        renderFullContent(card, data.content, uid);
+        await customAlert('内容已成功更新', '✅ 编辑成功');
+
+    } catch (error) {
+        await customAlert('保存失败: ' + error.message, '❌ 编辑失败');
+        // Re-enable button on failure
+        const btn = card.querySelector('.save-edit-btn');
+        if (btn) {
+            btn.textContent = '确认';
+            btn.disabled = false;
+        }
+    }
+}
+
 
 async function handleDeletePost(uid) {
     const confirmed = await customConfirm('您确定要删除整个帖子吗？此操作无法撤销！', '⚠️ 删除帖子');
@@ -1051,24 +1249,39 @@ function customAlert(message, title = '提示') {
     });
 }
 
+function parseForumDate(ts) {
+    if (!ts) return null;
+    let d;
+    if (typeof ts === 'string') {
+        // Normalize non-standard timestamps like "2025-11-12T11-57-08.749Z"
+        // by replacing hyphens in the time part with colons.
+        const normalizedTs = ts.replace(/T(\d{2})-(\d{2})-(\d{2})/, 'T$1:$2:$3');
+        d = new Date(normalizedTs);
+
+        // Fallback for other non-standard formats if the above fails
+        if (isNaN(d.getTime())) {
+            // This handles formats like 'YYYY-MM-DD HH:mm:ss' better on some engines
+            d = new Date(ts.replace(/-/g, '/'));
+        }
+    } else {
+        // Assumes it's already a Date object or a valid timestamp number
+        d = new Date(ts);
+    }
+    
+    // If still invalid, return null
+    if (isNaN(d.getTime())) {
+        return null;
+    }
+    return d;
+}
+
 function formatDate(ts) {
     if (!ts) return '';
     try {
-        // Handle various date formats
-        let d;
-        if (typeof ts === 'string') {
-            // Try parsing ISO format first
-            d = new Date(ts);
-            // If invalid, try replacing hyphens with slashes for better compatibility
-            if (isNaN(d.getTime())) {
-                d = new Date(ts.replace(/-/g, '/'));
-            }
-        } else {
-            d = new Date(ts);
-        }
-        
+        const d = parseForumDate(ts);
+
         // Check if date is valid
-        if (isNaN(d.getTime())) {
+        if (!d) {
             console.warn('Invalid date:', ts);
             return String(ts);
         }
@@ -1081,12 +1294,19 @@ function formatDate(ts) {
         if (diff < 86400) return `${Math.floor(diff / 3600)}小时前`;
         if (diff < 86400 * 7) return `${Math.floor(diff / 86400)}天前`;
         
-        // Format as date with time
+        // Format as date with time, including year if it's not the current year.
+        const year = d.getFullYear();
+        const currentYear = now.getFullYear();
         const month = d.getMonth() + 1;
         const day = d.getDate();
         const hours = d.getHours().toString().padStart(2, '0');
         const minutes = d.getMinutes().toString().padStart(2, '0');
-        return `${month}月${day}日 ${hours}:${minutes}`;
+        
+        if (year !== currentYear) {
+            return `${year}年${month}月${day}日 ${hours}:${minutes}`;
+        } else {
+            return `${month}月${day}日 ${hours}:${minutes}`;
+        }
     } catch (e) {
         console.error('Date formatting error:', e, ts);
         return String(ts);
