@@ -697,12 +697,24 @@ if (!gotTheLock) {
         }
     });
     
+    // 注册创建未锁定话题的全局快捷键
+    globalShortcut.register('CommandOrControl+Shift+N', () => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('create-unlocked-topic');
+        }
+    });
+    
     // --- Music Player IPC Handlers are now in modules/ipc/musicHandlers.js ---
 
 
    // --- Assistant IPC Handlers are now in modules/ipc/assistantHandlers.js ---
 
     // --- Theme IPC Handlers are now in modules/ipc/themeHandlers.js ---
+    
+    // --- Platform Info IPC Handler ---
+    ipcMain.handle('get-platform', () => {
+        return process.platform;
+    });
 });
 
     // --- Python Execution IPC Handler ---
